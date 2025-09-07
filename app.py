@@ -5,17 +5,17 @@ import streamlit as st
 from datetime import datetime
 import pandas as pd
 
-# --- Importar funciones ---
+# --- استيراد الدوال ---
 try:
     from odds_math import *
     from gemini_helper import analyze_with_gemini
     import odds_provider_theoddsapi as odds_api
     from data_loader import load_stats_data_from_csv
 except ImportError as e:
-    st.error(f"Error en la importación: {e}. ¡Asegúrese de que todos los archivos auxiliares existan!")
+    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
     st.stop()
 
-# --- Configuración de la página y CSS ---
+# --- إعدادات الصفحة والـ CSS ---
 st.set_page_config(page_title="Odds Strategist - Council of Experts", page_icon="🏛️", layout="wide")
 
 st.markdown("""
@@ -28,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def render_prob_bar(label, probability, color):
-    """Función para dibujar la barra de probabilidad"""
+    """دالة لرسم شريط الاحتمالات"""
     pct = probability * 100
     return f"""
     <div class="prob-bar-container">
@@ -37,50 +37,50 @@ def render_prob_bar(label, probability, color):
     </div>
     """
 
-# --- Interfaz principal ---
-st.markdown("<h1>Odds Strategist - Consejo de Expertos 🏛️</h1>", unsafe_allow_html=True)
+# --- الواجهة الرئيسية ---
+st.markdown("<h1>Odds Strategist - مجلس الخبراء 🏛️</h1>", unsafe_allow_html=True)
 
-# --- Barra lateral ---
+# --- الشريط الجانبي ---
 def load_api_keys():
-    st.sidebar.header("🔑 Configuración de claves API")
+    st.sidebar.header("🔑 إعدادات المفاتيح")
     odds_key, gemini_key = None, None
     if 'ODDS_API_KEY' in st.secrets:
         odds_key = st.secrets['ODDS_API_KEY']
-        st.sidebar.success("✅ Clave API de Odds cargada.")
+        st.sidebar.success("✅ Odds API Key loaded.")
     else:
-        odds_key = st.sidebar.text_input("Clave API de The Odds", type="password")
+        odds_key = st.sidebar.text_input("The Odds API Key", type="password")
     if 'GEMINI_API_KEY' in st.secrets:
         gemini_key = st.secrets['GEMINI_API_KEY']
-        st.sidebar.success("✅ Clave API de Gemini cargada.")
+        st.sidebar.success("✅ Gemini API Key loaded.")
     else:
-        gemini_key = st.sidebar.text_input("Clave API de Gemini", type="password")
+        gemini_key = st.sidebar.text_input("Gemini API Key", type="password")
     if odds_key: os.environ["ODDS_API_KEY"] = odds_key
     if gemini_key: os.environ["GEMINI_API_KEY"] = gemini_key
     return odds_key, gemini_key
 
 odds_api_key, gemini_api_key = load_api_keys()
 
-st.sidebar.header("🏦 Gestión de fondos")
-bankroll = st.sidebar.number_input("Tamaño del fondo ($)", 1.0, value=100.0, step=10.0)
-kelly_scale = st.sidebar.slider("Factor Kelly (Kelly Scale)", 0.05, 1.0, 0.25, 0.05)
+st.sidebar.header("🏦 إدارة المحفظة")
+bankroll = st.sidebar.number_input("حجم المحفظة ($)", 1.0, value=100.0, step=10.0)
+kelly_scale = st.sidebar.slider("معامل كيلي (Kelly Scale)", 0.05, 1.0, 0.25, 0.05)
 
-st.sidebar.header("⚙️ Configuración del mercado")
+st.sidebar.header("⚙️ إعدادات السوق")
 try:
     if not odds_api_key:
-        st.sidebar.warning("Por favor, ingrese la clave API de The Odds.")
+        st.sidebar.warning("الرجاء إدخال مفتاح The Odds API.")
         st.stop()
     sports = odds_api.list_sports()
     sport_options = {f"{s.get('group')} - {s.get('title')}": s.get("key") for s in sports}
-    selected_sport_label = st.sidebar.selectbox("Seleccione el deporte:", list(sport_options.keys()))
+    selected_sport_label = st.sidebar.selectbox("اختر الرياضة:", list(sport_options.keys()))
     sport_key = sport_options[selected_sport_label]
-    regions = st.sidebar.multiselect("Regiones:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
-    markets = st.sidebar.multiselect("Mercados:", ["h2h", "totals"], default=["h2h", "totals"])
+    regions = st.sidebar.multiselect("المناطق:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
+    markets = st.sidebar.multiselect("الأسواق:", ["h2h", "totals"], default=["h2h", "totals"])
 except Exception as e:
-    st.error(f"No se pueden obtener los deportes. Verifique la clave API de The Odds. Error: {e}")
+    st.error(f"لا يمكن جلب الرياضات. تأكد من صحة مفتاح The Odds API. الخطأ: {e}")
     st.stop()
 
-st.sidebar.header("📊 Fuente de datos de estadísticas")
-st.sidebar.info("Seleccione el archivo CSV que ha descargado de football-data.co.uk")
+st.sidebar.header("📊 مصدر بيانات الإحصائيات")
+st.sidebar.info("اختر ملف CSV الذي قمت بتحميله من football-data.co.uk")
 available_csv_files = {
     "Premier League (E0.csv)": "E0.csv",
     "La Liga (SP1.csv)": "SP1.csv",
@@ -88,50 +88,50 @@ available_csv_files = {
     "Bundesliga (D1.csv)": "D1.csv",
     "Ligue 1 (F1.csv)": "F1.csv",
 }
-selected_csv_label = st.sidebar.selectbox("Seleccione el archivo de la liga:", list(available_csv_files.keys()))
+selected_csv_label = st.sidebar.selectbox("اختر ملف الدوري:", list(available_csv_files.keys()))
 stats_csv_path = available_csv_files[selected_csv_label]
 
-# --- Obtener datos ---
-if st.button("🚀 Obtener y analizar partidos"):
+# --- جلب البيانات ---
+if st.button("🚀 جلب وتحليل المباريات"):
     if not odds_api_key:
-        st.error("Por favor, ingrese la clave API de The Odds.")
+        st.error("يرجى إدخال مفتاح The Odds API.")
     else:
-        with st.spinner(f"Obteniendo partidos para {selected_sport_label}..."):
+        with st.spinner(f"جاري جلب مباريات {selected_sport_label}..."):
             try:
                 events, meta = odds_api.fetch_odds_for_sport(sport_key, ",".join(regions), ",".join(markets))
                 st.session_state["events_data"] = {"events": events, "meta": meta}
-                st.success(f"Se obtuvieron {len(events)} partidos.")
+                st.success(f"تم جلب {len(events)} مباراة.")
             except Exception as e:
-                st.error(f"Error al obtener las cuotas de los partidos: {e}")
+                st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
                 st.session_state["events_data"] = None
         
-        with st.spinner("Cargando y procesando el archivo de estadísticas..."):
+        with st.spinner("جاري تحميل ومعالجة ملف الإحصائيات..."):
             if os.path.exists(stats_csv_path):
                 stats_df = load_stats_data_from_csv(stats_csv_path)
                 st.session_state['stats_df'] = stats_df
                 if stats_df is not None:
-                    st.success(f"Archivo '{stats_csv_path}' cargado exitosamente.")
+                    st.success(f"تم تحميل ملف '{stats_csv_path}' بنجاح.")
                 else:
-                    st.error(f"Error al leer el archivo '{stats_csv_path}'.")
+                    st.error(f"فشل في قراءة ملف '{stats_csv_path}'.")
             else:
-                st.error(f"El archivo '{stats_csv_path}' no se encuentra. Por favor, descárguelo y colóquelo en la carpeta.")
+                st.error(f"ملف '{stats_csv_path}' غير موجود. الرجاء تحميله ووضعه في المجلد.")
                 st.session_state['stats_df'] = None
 
-# --- Mostrar y analizar partidos ---
+# --- عرض وتحليل المباريات ---
 if "events_data" in st.session_state and st.session_state["events_data"]:
     events = st.session_state["events_data"]["events"]
     stats_df = st.session_state.get('stats_df')
     match_options = {f"{ev.get('home_team')} vs {ev.get('away_team')}": i for i, ev in enumerate(events)}
     
     if match_options:
-        selected_match_label = st.selectbox("Seleccione un partido de la lista:", list(match_options.keys()))
+        selected_match_label = st.selectbox("اختر مباراة من القائمة:", list(match_options.keys()))
         event = events[match_options[selected_match_label]]
         
         home_team_name = event['home_team']
         away_team_name = event['away_team']
 
-        # --- Ejecutar el consejo de expertos ---
-        # 1. Análisis de mercado
+        # --- تشغيل مجلس الخبراء ---
+        # 1. تحليل السوق
         h2h_prices = odds_api.extract_h2h_prices(event)
         agg_odds_h2h, fair_h2h, sugg_h2h = {}, {}, {}
         if any(h2h_prices.values()):
@@ -139,24 +139,24 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
             fair_h2h = shin_fair_probs(implied_from_decimal(agg_odds_h2h))
             sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale)
         
-        # 2, 3, 4. Análisis estadísticos
+        # 2, 3, 4. التحليلات الإحصائية
         poisson_probs, form_probs, xg_probs = None, None, None
         if stats_df is not None:
             poisson_probs = poisson_prediction(home_team_name, away_team_name, stats_df)
             form_probs = calculate_form_probs(home_team_name, away_team_name, stats_df)
             xg_probs = calculate_xg_probs(home_team_name, away_team_name, stats_df)
 
-        # --- Mostrar la interfaz con pestañas ---
-        tab1, tab2, tab3, tab4 = st.tabs(["🏛️ Consejo de Expertos", "📈 Detalles 1x2", "⚽️ Detalles de Goles", "🤖 Consulta a Gemini"])
+        # --- عرض الواجهة بالتابات ---
+        tab1, tab2, tab3, tab4 = st.tabs(["🏛️ مجلس الخبراء", "📈 تفاصيل 1x2", "⚽️ تفاصيل الأهداف", "🤖 استشارة Gemini"])
 
         with tab1:
-            st.header("Opiniones del Consejo de Expertos")
+            st.header("آراء مجلس الخبراء")
             def get_verdict(probs):
-                if not probs: return "Datos insuficientes"
+                if not probs: return "بيانات ناقصة"
                 max_prob = max(probs, key=probs.get)
-                if max_prob == 'home': return f"Victoria de {home_team_name}"
-                if max_prob == 'away': return f"Victoria de {away_team_name}"
-                return "Empate"
+                if max_prob == 'home': return f"فوز {home_team_name}"
+                if max_prob == 'away': return f"فوز {away_team_name}"
+                return "التعادل"
 
             verdicts = {
                 "market": get_verdict(fair_h2h),
@@ -167,77 +167,77 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
 
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.subheader("👨‍💼 Experto de Mercado")
-                st.metric("Recomienda:", verdicts["market"])
+                st.subheader("👨‍💼 خبير السوق")
+                st.metric("يرشح:", verdicts["market"])
             with col2:
-                st.subheader("🎯 Experto de Goles")
-                st.metric("Recomienda:", verdicts["poisson"])
+                st.subheader("🎯 خبير الأهداف")
+                st.metric("يرشح:", verdicts["poisson"])
             with col3:
-                st.subheader("📈 Experto de Forma Actual")
-                st.metric("Recomienda:", verdicts["form"])
+                st.subheader("📈 خبير الأداء الحالي")
+                st.metric("يرشح:", verdicts["form"])
             with col4:
-                st.subheader("🔬 Experto de Rendimiento")
-                st.metric("Recomienda:", verdicts["xg"])
+                st.subheader("🔬 خبير الأداء النوعي")
+                st.metric("يرشح:", verdicts["xg"])
             
             st.markdown("---")
-            st.header("⭐ Veredicto final e indicador de confianza")
+            st.header("⭐ الخلاصة النهائية ومؤشر الثقة")
 
-            votes = [v for v in verdicts.values() if v != "Datos insuficientes"]
+            votes = [v for v in verdicts.values() if v != "بيانات ناقصة"]
             if len(votes) > 0:
                 most_common_verdict = max(set(votes), key=votes.count)
                 num_votes = votes.count(most_common_verdict)
-                st.metric(f"El resultado más probable:", f"{most_common_verdict}", f"{num_votes} de {len(votes)} expertos están de acuerdo")
+                st.metric(f"النتيجة الأكثر ترجيحًا:", f"{most_common_verdict}", f"{num_votes} / {len(votes)} خبراء يتفقون")
             else:
-                st.warning("No se puede calcular el indicador de confianza debido a la falta de todos los análisis.")
+                st.warning("لا يمكن حساب مؤشر الثقة بسبب نقص كل التحليلات.")
 
         with tab2:
-            st.header("Análisis del mercado de resultado del partido (1x2)")
+            st.header("تحليل سوق نتيجة المباراة (1x2)")
             if not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
-                st.info("No hay oportunidades de valor claras en este mercado según los criterios actuales.")
+                st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق حسب المعايير الحالية.")
             else:
                 for side, suggestion in sugg_h2h.items():
                     if suggestion.get('edge', 0) > 0:
                         with st.container(border=True):
-                            st.subheader(f"🎯 Oportunidad de valor: {side.capitalize()}")
+                            st.subheader(f"🎯 فرصة قيمة: {side.capitalize()}")
                             c1, c2, c3 = st.columns(3)
-                            c1.metric("Mejor cuota del mercado", f"{agg_odds_h2h.get(side, 0):.2f}")
-                            c2.metric("Ventaja (Edge)", f"+{suggestion['edge']*100:.2f}%")
-                            c3.metric("Apuesta sugerida (Kelly)", f"${suggestion['stake_amount']:.2f}")
+                            c1.metric("أفضل سعر في السوق", f"{agg_odds_h2h.get(side, 0):.2f}")
+                            c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
+                            c3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
 
         with tab3:
-            st.header("Análisis del mercado de goles (Más/Menos)")
+            st.header("تحليل سوق الأهداف (Over/Under)")
             totals_lines = odds_api.extract_totals_lines(event)
             if not totals_lines:
-                st.info("No hay datos para el mercado de goles en este partido.")
+                st.info("لا توجد بيانات لسوق الأهداف لهذه المباراة.")
             else:
-                selected_line = st.selectbox("Seleccione la línea de gol:", sorted(totals_lines.keys(), key=float))
+                selected_line = st.selectbox("اختر خط الأهداف:", sorted(totals_lines.keys(), key=float))
                 line_data = totals_lines[selected_line]
                 agg_odds_ou = {'over': aggregate_prices(line_data.get('over', []), 'best'), 'under': aggregate_prices(line_data.get('under', []), 'best')}
                 if agg_odds_ou['over'] > 0 and agg_odds_ou['under'] > 0:
                     imps_ou = implied_from_decimal(agg_odds_ou)
                     fair_ou = shin_fair_probs(imps_ou)
                     sugg_ou = kelly_suggestions(fair_ou, agg_odds_ou, bankroll, kelly_scale)
-                    st.subheader(f"Probabilidades justas para la línea {selected_line}")
-                    st.markdown(render_prob_bar(f"Más de {selected_line}", fair_ou.get('over', 0), '#22c55e'), unsafe_allow_html=True)
-                    st.markdown(render_prob_bar(f"Menos de {selected_line}", fair_ou.get('under', 0), '#ef4444'), unsafe_allow_html=True)
+                    st.subheader(f"الاحتمالات العادلة لخط {selected_line}")
+                    st.markdown(render_prob_bar(f"Over {selected_line}", fair_ou.get('over', 0), '#22c55e'), unsafe_allow_html=True)
+                    st.markdown(render_prob_bar(f"Under {selected_line}", fair_ou.get('under', 0), '#ef4444'), unsafe_allow_html=True)
                     if any(s.get('edge', 0) > 0 for s in sugg_ou.values()):
                         for side, suggestion in sugg_ou.items():
                             if suggestion.get('edge', 0) > 0:
                                 with st.container(border=True):
-                                    st.subheader(f"🎯 Oportunidad de valor: {side.capitalize()} {selected_line}")
+                                    st.subheader(f"🎯 فرصة قيمة: {side.capitalize()} {selected_line}")
                                     c1, c2, c3 = st.columns(3)
-                                    c1.metric("Mejor cuota", f"{agg_odds_ou.get(side, 0):.2f}")
-                                    c2.metric("Ventaja (Edge)", f"+{suggestion['edge']*100:.2f}%")
-                                    c3.metric("Apuesta sugerida", f"${suggestion['stake_amount']:.2f}")
+                                    c1.metric("أفضل سعر", f"{agg_odds_ou.get(side, 0):.2f}")
+                                    c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
+                                    c3.metric("الرهان المقترح", f"${suggestion['stake_amount']:.2f}")
                 else:
-                    st.warning("No hay suficientes cuotas para analizar esta línea.")
+                    st.warning("لا توجد أسعار كافية لتحليل هذا الخط.")
 
         with tab4:
-            if st.button("Pedir un análisis detallado al presidente del consejo 🧠"):
+            if st.button("اطلب تحليلاً مفصلاً من رئيس المجلس 🧠"):
                 if not gemini_api_key:
-                    st.error("Por favor, ingrese primero la clave API de Gemini.")
+                    st.error("أدخل مفتاح Gemini API أولاً.")
                 else:
-                    with st.spinner("El estratega está pensando..."):
+                    with st.spinner("الخبير الاستراتيجي يفكر..."):
                         payload = {
                             "match": {"home": home_team_name, "away": away_team_name},
                             "market_analysis": {"verdict": verdicts["market"], "fair_probs": fair_h2h},
@@ -249,4 +249,4 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                             analysis = analyze_with_gemini(payload=payload)
                             st.markdown(analysis)
                         except Exception as e:
-                            st.error(f"Error de Gemini: {e}")
+                            st.error(f"حدث خطأ من Gemini: {e}")
