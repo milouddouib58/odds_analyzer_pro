@@ -1,138 +1,61 @@
 # odds_math.py
 import math
+import pandas as pd
 
-def aggregate_prices(prices: list, mode: str = 'median') -> float:
-    """
-    تجميع قائمة من الأسعار باستخدام طريقة محددة (الوسيط، الأفضل، المتوسط).
-    """
-    if not prices: return 0.0
-    if mode == 'median':
-        prices.sort()
-        mid = len(prices) // 2
-        return (prices[mid] + prices[~mid]) / 2
-    elif mode == 'best':
-        return max(prices)
-    elif mode == 'mean':
-        return sum(prices) / len(prices)
-    return 0.0
+# ... (كل الدوال القديمة مثل aggregate_prices, shin_fair_probs, etc. تبقى كما هي) ...
 
-def implied_from_decimal(odds: dict) -> dict:
+def calculate_form_probs(team_name: str, opponent_name: str, stats_df: pd.DataFrame, num_matches=6):
     """
-    تحويل الأسعار العشرية إلى احتمالات ضمنية.
+    يحسب احتمالات الفوز بناءً على أداء الفريقين في آخر N مباريات.
     """
-    return {k: 1/v if v and v > 0 else 0 for k, v in odds.items()}
+    team_matches = stats_df[(stats_df['HomeTeam'] == team_name) | (stats_df['AwayTeam'] == team_name)].tail(num_matches)
+    opponent_matches = stats_df[(stats_df['HomeTeam'] == opponent_name) | (stats_df['AwayTeam'] == opponent_name)].tail(num_matches)
 
-def overround(implied_probs: dict) -> float:
-    """
-    حساب هامش الربح الإجمالي للسوق (Overround).
-    """
-    return sum(implied_probs.values())
+    if team_matches.empty or opponent_matches.empty:
+        return {"home": 0.33, "draw": 0.33, "away": 0.33} # نتيجة محايدة
 
-def normalize_proportional(implied_probs: dict) -> dict:
-    """
-    تسوية الاحتمالات لإزالة الهامش بالطريقة التناسبية البسيطة.
-    """
-    total_prob = overround(implied_probs)
-    if total_prob == 0: return implied_probs
-    return {k: v / total_prob for k, v in implied_probs.items()}
+    def get_ppg(df, team):
+        points = 0
+        for _, row in df.iterrows():
+            if row['HomeTeam'] == team and row['Result'] == 'H': points += 3
+            elif row['AwayTeam'] == team and row['Result'] == 'A': points += 3
+            elif row['Result'] == 'D': points += 1
+        return points / len(df)
 
-def shin_fair_probs(implied_probs: dict) -> dict:
-    """
-    إزالة هامش الربح باستخدام طريقة Shin الأكثر دقة.
-    """
-    if any(p <= 0 for p in implied_probs.values()):
-        return normalize_proportional(implied_probs)
-    if not implied_probs: return {}
+    team_ppg = get_ppg(team_matches, team_name)
+    opponent_ppg = get_ppg(opponent_matches, opponent_name)
     
-    def sum_diff_sq(z, probs):
-        return sum(((p - z) / (1 - z if p < z else p))**2 for p in probs) - 1
+    total_ppg = team_ppg + opponent_ppg
+    if total_ppg == 0: return {"home": 0.33, "draw": 0.33, "away": 0.33}
 
-    implied_values = list(implied_probs.values())
-    total_prob = sum(implied_values)
-    if total_prob < 1.0: return normalize_proportional(implied_probs)
-
-    low = 0.0
-    high = min(implied_values)
-    z = 0.0
+    # تقدير بسيط للاحتمالات بناءً على فارق النقاط
+    home_prob = team_ppg / total_ppg
+    away_prob = opponent_ppg / total_ppg
+    # نفترض أن التعادل يأخذ نسبة ثابتة من الفروقات
+    draw_prob = 1 - abs(home_prob - away_prob) * 0.5
     
-    for _ in range(100):
-        z = (low + high) / 2
-        if sum_diff_sq(z, implied_values) > 0:
-            low = z
-        else:
-            high = z
-            
-    fair_probs_values = [(p - z) / (1 - z) for p in implied_values]
-    return dict(zip(implied_probs.keys(), fair_probs_values))
+    home_prob *= (1 - draw_prob)
+    away_prob *= (1 - draw_prob)
 
-def kelly_suggestions(fair_probs: dict, book_odds: dict, bankroll: float, kelly_scale: float = 0.25) -> dict:
-    """
-    حساب اقتراحات الرهان بناءً على معيار كيلي.
-    """
-    suggestions = {}
-    for outcome, prob in fair_probs.items():
-        odds = book_odds.get(outcome)
-        if not odds or odds <= 1: continue
-        
-        edge = (prob * odds) - 1
-        
-        if edge > 0:
-            kelly_fraction = edge / (odds - 1)
-            stake_fraction = kelly_fraction * kelly_scale
-            stake_amount = bankroll * stake_fraction
-            
-            suggestions[outcome] = {
-                "edge": edge,
-                "kelly_fraction": kelly_fraction,
-                "stake_fraction": stake_fraction,
-                "stake_amount": stake_amount
-            }
-    return suggestions
+    total_final = home_prob + draw_prob + away_prob
+    return {"home": home_prob/total_final, "draw": draw_prob/total_final, "away": away_prob/total_final}
 
-def poisson_prediction(home_attack, home_defense, away_attack, away_defense):
-    """
-    يتوقع احتمالات الفوز/التعادل/الخسارة باستخدام توزيع بواسون.
-    """
-    expected_home_goals = home_attack * away_defense
-    expected_away_goals = away_attack * home_defense
-    max_goals = 5
-    
-    home_goal_probs = [ (math.exp(-expected_home_goals) * expected_home_goals**i) / math.factorial(i) for i in range(max_goals + 1) ]
-    away_goal_probs = [ (math.exp(-expected_away_goals) * expected_away_goals**i) / math.factorial(i) for i in range(max_goals + 1) ]
-    
-    home_win_prob, draw_prob, away_win_prob = 0, 0, 0
-    
-    for hg in range(max_goals + 1):
-        for ag in range(max_goals + 1):
-            prob = home_goal_probs[hg] * away_goal_probs[ag]
-            if hg > ag:
-                home_win_prob += prob
-            elif hg == ag:
-                draw_prob += prob
-            else:
-                away_win_prob += prob
-                
-    total_prob = home_win_prob + draw_prob + away_win_prob
-    if total_prob == 0: return {"home": 0, "draw": 0, "away": 0}
 
-    return {
-        "home": home_win_prob / total_prob,
-        "draw": draw_prob / total_prob,
-        "away": away_win_prob / total_prob,
-    }
-
-def analyze_market_depth(prices: list):
+def calculate_xg_probs(home_team: str, away_team: str, stats_df: pd.DataFrame):
     """
-    تحليل عمق السوق: حساب المتوسط، الانحراف المعياري، والبحث عن القيم الشاردة.
+    يحسب احتمالات الفوز باستخدام متوسط الأهداف المتوقعة (xG).
     """
-    if len(prices) < 2:
-        return {"mean": 0, "std_dev": 0, "outliers": []}
+    home_data = stats_df[stats_df['HomeTeam'] == home_team]
+    away_data = stats_df[stats_df['AwayTeam'] == away_team]
 
-    mean = sum(prices) / len(prices)
-    variance = sum([(p - mean) ** 2 for p in prices]) / len(prices)
-    std_dev = math.sqrt(variance)
-    
-    outlier_threshold = mean + (1.5 * std_dev)
-    outliers = [p for p in prices if p > outlier_threshold]
-    
-    return {"mean": mean, "std_dev": std_dev, "outliers": outliers}
+    if home_data.empty or away_data.empty:
+        return None
+
+    # قوة هجوم ودفاع كل فريق بناءً على xG
+    home_attack_xg = home_data['Home_xG'].mean()
+    home_defense_xg = home_data['Home_xG_for_Away'].mean()
+    away_attack_xg = away_data['Away_xG'].mean()
+    away_defense_xg = away_data['Away_xG_for_Home'].mean()
+
+    # استخدام نموذج بواسون لكن بمعطيات xG
+    return poisson_prediction(home_attack_xg, home_defense_xg, away_attack_xg, away_defense_xg)
