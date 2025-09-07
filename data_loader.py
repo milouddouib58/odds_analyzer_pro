@@ -1,4 +1,4 @@
-# data_loader.py (النسخة الأوتوماتيكية)
+# data_loader.py (النسخة المصححة مع ترجمة الأعمدة)
 import pandas as pd
 import requests
 import os
@@ -16,50 +16,60 @@ def load_stats_data_from_csv(filepath: str):
     """
     يقوم بتحميل بيانات الإحصائيات من ملف CSV.
     إذا لم يكن الملف موجودًا، يقوم بتحميله تلقائيًا.
+    ويقوم بإعادة تسمية الأعمدة لتكون متوافقة.
     """
-    # التحقق إذا كان الملف موجودًا
     if not os.path.exists(filepath):
         print(f"⚠️ الملف '{filepath}' غير موجود. جاري محاولة تحميله تلقائيًا...")
-        
-        # استخراج اسم الملف للعثور على الرابط
         filename = os.path.basename(filepath)
         url = LEAGUE_CSV_URLS.get(filename)
-        
         if not url:
             print(f"❌ لا يوجد رابط تحميل معروف للملف '{filename}'.")
             return None
-        
         try:
-            # تحميل الملف من الإنترنت
             response = requests.get(url)
-            response.raise_for_status() # التأكد من نجاح الطلب
-            
-            # كتابة محتوى الملف محليًا
+            response.raise_for_status()
             with open(filepath, 'wb') as f:
                 f.write(response.content)
             print(f"✅ تم تحميل '{filepath}' بنجاح.")
-        
         except requests.exceptions.RequestException as e:
             print(f"❌ فشل تحميل الملف من الرابط: {e}")
             return None
 
-    # الآن، نقرأ الملف (سواء كان موجودًا من قبل أو تم تحميله الآن)
     try:
-        columns_to_use = ['Date', 'HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'FTR', 'HS', 'AS', 'HST', 'AST', 'xG', 'xGA', 'xG.1', 'xGA.1']
-        df = pd.read_csv(filepath, usecols=lambda c: c in columns_to_use, encoding='ISO-8859-1')
+        # --- ::: التعديل الأهم يبدأ هنا ::: ---
         
-        # إعادة تسمية الأعمدة لتكون متوافقة مع xG
+        # 1. تحميل الملف
+        df = pd.read_csv(filepath, encoding='ISO-8859-1', on_bad_lines='skip')
+
+        # 2. قاموس الترجمة لأسماء الأعمدة
         rename_map = {
+            'FTHG': 'HomeGoals',
+            'FTAG': 'AwayGoals',
+            'FTR': 'Result',
+            'HS': 'HomeShots',
+            'AS': 'AwayShots',
+            'HST': 'HomeShotsTarget',
+            'AST': 'AwayShotsTarget',
             'xG': 'Home_xG',
             'xG.1': 'Away_xG',
-            'xGA': 'Away_xG_for_Home', # xG conceded by home team
-            'xGA.1': 'Home_xG_for_Away'  # xG conceded by away team
+            'xGA': 'Away_xG_for_Home',
+            'xGA.1': 'Home_xG_for_Away'
         }
-        df.rename(columns=rename_map, inplace=True)
         
-        df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
+        # 3. إعادة تسمية الأعمدة الموجودة فقط
+        df.rename(columns=lambda c: rename_map.get(c, c), inplace=True)
+        
+        # التأكد من وجود الأعمدة الأساسية بعد إعادة التسمية
+        required_cols = ['Date', 'HomeTeam', 'AwayTeam', 'HomeGoals', 'AwayGoals']
+        if not all(col in df.columns for col in required_cols):
+            print("❌ الأعمدة الأساسية (HomeGoals, AwayGoals, etc.) غير موجودة في ملف CSV.")
+            return None
+
+        df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+        print("✅ تم تحميل وترجمة أعمدة ملف الإحصائيات بنجاح.")
         return df
+        # --- ::: نهاية التعديل ::: ---
+        
     except Exception as e:
         print(f"Error loading stats CSV: {e}")
         return None
-
