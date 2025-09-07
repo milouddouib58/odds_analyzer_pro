@@ -40,30 +40,29 @@ def render_prob_bar(label, probability, color):
 st.markdown("<h1>Odds Strategist AUTO 🤖</h1>", unsafe_allow_html=True)
 st.markdown("### التحليل الأوتوماتيكي: استراتيجيات السوق + التوقعات الإحصائية (بواسون)")
 
-# --- الدالة الذكية لقراءة المفاتيح ---
-def load_api_keys():
-    st.sidebar.header("🔑 إعدادات المفاتيح")
-    odds_key, gemini_key, football_data_key = None, None, None
-    if 'ODDS_API_KEY' in st.secrets:
-        odds_key = st.secrets['ODDS_API_KEY']
-        st.sidebar.success("✅ Odds API Key loaded.")
-    else:
-        odds_key = st.sidebar.text_input("The Odds API Key", type="password")
-    if 'GEMINI_API_KEY' in st.secrets:
-        gemini_key = st.secrets['GEMINI_API_KEY']
-        st.sidebar.success("✅ Gemini API Key loaded.")
-    else:
-        gemini_key = st.sidebar.text_input("Gemini API Key", type="password")
-    if 'FOOTBALL_DATA_API_KEY' in st.secrets:
-        football_data_key = st.secrets['FOOTBALL_DATA_API_KEY']
-        st.sidebar.success("✅ Football Data Key loaded.")
-    else:
-        football_data_key = st.sidebar.text_input("Football Data API Key", type="password")
-    if odds_key: os.environ["ODDS_API_KEY"] = odds_key
-    if gemini_key: os.environ["GEMINI_API_KEY"] = gemini_key
-    return odds_key, gemini_key, football_data_key
+# --- قراءة المفاتيح مباشرة (تصحيح للـ NameError) ---
+st.sidebar.header("🔑 إعدادات المفاتيح")
 
-odds_api_key, gemini_key, football_data_key = load_api_keys()
+if 'ODDS_API_KEY' in st.secrets:
+    odds_api_key = st.secrets['ODDS_API_KEY']
+    st.sidebar.success("✅ Odds API Key loaded.")
+else:
+    odds_api_key = st.sidebar.text_input("The Odds API Key", type="password")
+
+if 'GEMINI_API_KEY' in st.secrets:
+    gemini_api_key = st.secrets['GEMINI_API_KEY']
+    st.sidebar.success("✅ Gemini API Key loaded.")
+else:
+    gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password")
+
+if 'FOOTBALL_DATA_API_KEY' in st.secrets:
+    football_data_key = st.secrets['FOOTBALL_DATA_API_KEY']
+    st.sidebar.success("✅ Football Data Key loaded.")
+else:
+    football_data_key = st.sidebar.text_input("Football Data API Key", type="password")
+
+if odds_api_key: os.environ["ODDS_API_KEY"] = odds_api_key
+if gemini_api_key: os.environ["GEMINI_API_KEY"] = gemini_api_key
 
 # --- إعدادات المحفظة والسوق ---
 st.sidebar.header("🏦 إدارة المحفظة")
@@ -116,7 +115,7 @@ if st.button("🚀 جلب وتحليل المباريات"):
                 st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
                 st.session_state["events_data"] = None
         
-        with st.spinner(f"جاري سحب إحصائيات '{selected_league_name}' من football-data.org..."):
+        with st.spinner(f"جاري سحب إحصائيات '{selected_league_name}'..."):
             league_df = get_league_stats_from_api(api_key=football_data_key, competition_code=competition_code) 
             if league_df is None:
                 st.error("فشل في سحب جدول الإحصائيات.")
