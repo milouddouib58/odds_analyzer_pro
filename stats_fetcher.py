@@ -1,14 +1,25 @@
-# stats_fetcher.py (النسخة المطورة بـ football-data API)
+# stats_fetcher.py (النسخة المصححة مع مترجم الأسماء)
 import os
 import requests
 import pandas as pd
 
 API_URL = "https://api.football-data.org/v4/"
 
+def _normalize_team_name(name: str) -> str:
+    """
+    يوحد أسماء الفرق لتسهيل العثور عليها بين مصادر البيانات المختلفة.
+    مثال: "Manchester United FC" -> "manchester united"
+    """
+    # يمكنك إضافة استثناءات خاصة هنا إذا لزم الأمر
+    # special_cases = {"Wolverhampton Wanderers": "Wolves"}
+    # if name in special_cases:
+    #     name = special_cases[name]
+    
+    return name.lower().replace(" fc", "").replace(" afc", "").replace(" & ", " and ")
+
 def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
     """
     يجلب إحصائيات الدوري باستخدام مفتاح football-data.org الرسمي.
-    PL = Premier League, BL1 = Bundesliga, SA = Serie A, etc.
     """
     if not api_key:
         raise ValueError("مفتاح football-data.org API مطلوب.")
@@ -18,34 +29,31 @@ def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
 
     try:
         response = requests.get(url, headers=headers)
-        response.raise_for_status() # يتأكد إذا كان الطلب ناجحًا
+        response.raise_for_status()
         data = response.json()
 
-        # استخراج جدول الترتيب
-        standings = data['standings'][0]['table']
-        df = pd.DataFrame(standings)
+        standings = data.get('standings', [])
+        if not standings or 'table' not in standings[0]:
+            print("❌ هيكل البيانات غير متوقع من football-data.org")
+            return None
 
-        # استخراج بيانات الفرق الأساسية
-        # "position", "team", "playedGames", "won", "draw", "lost", "points", "goalsFor", "goalsAgainst", "goalDifference"
+        df = pd.DataFrame(standings[0]['table'])
         df['team_name'] = df['team'].apply(lambda x: x['name'])
 
-        # --- حساب المتوسطات ---
         league_total_goals = df['goalsFor'].sum()
         league_total_matches = df['playedGames'].sum() / 2
+        
+        # تجنب القسمة على صفر إذا لم تكن هناك مباريات
+        if league_total_matches == 0: return None
         avg_goals_per_match = league_total_goals / league_total_matches
 
-        # --- حساب قوة الهجوم والدفاع ---
         df['attack_strength'] = (df['goalsFor'] / df['playedGames']) / (avg_goals_per_match / 2)
         df['defense_strength'] = (df['goalsAgainst'] / df['playedGames']) / (avg_goals_per_match / 2)
 
-        # تجهيز القاموس النهائي بالنتائج
         team_stats = {}
         for index, row in df.iterrows():
-            # قد تحتاج لتعديل أسماء الفرق لتتوافق مع أسماء odds api
-            # مثال: "Manchester United FC" vs "Manchester United"
-            team_name = row['team_name'].replace(" FC", "").replace(" AFC", "")
-            
-            team_stats[team_name] = {
+            normalized_name = _normalize_team_name(row['team_name'])
+            team_stats[normalized_name] = {
                 "attack": row['attack_strength'],
                 "defense": row['defense_strength']
             }
@@ -55,14 +63,4 @@ def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
 
     except Exception as e:
         print(f"❌ حدث خطأ أثناء سحب الإحصائيات من API: {e}")
-        error_content = response.json()
-        print("رسالة الخطأ من السيرفر:", error_content.get('message'))
         return None
-
-# # للتجربة
-# if __name__ == '__main__':
-#     # استبدل "YOUR_API_KEY" بمفتاحك
-#     api_key = os.getenv("FOOTBALL_DATA_API_KEY", "YOUR_API_KEY") 
-#     stats = get_league_stats_from_api(api_key=api_key)
-#     if stats:
-#         print(stats.get("Arsenal"))
