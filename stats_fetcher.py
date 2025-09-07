@@ -1,4 +1,4 @@
-# stats_fetcher.py (النسخة النهائية مع وضع التصحيح Debug Mode)
+# stats_fetcher.py (النسخة المصححة من الخطأ المطبعي)
 import os
 import requests
 import pandas as pd
@@ -8,7 +8,7 @@ API_URL = "https://api.football-data.org/v4/"
 
 def _normalize_team_name(name: str) -> str:
     """
-    يوحد أسماء الفرق بشكل أفضل ويستخدم قاموس ترجمة موسع.
+    يوحد أسماء الفرق لتسهيل العثور عليها.
     """
     name = name.lower().replace(" fc", "").replace(" afc", "").replace(" & ", " and ")
     
@@ -21,7 +21,6 @@ def _normalize_team_name(name: str) -> str:
         "tottenham hotspur": "tottenham",
         "brighton and hove albion": "brighton",
         "west ham united": "west ham",
-        # Houna nzidou ay farik ydir mouchkil
         "leicester city": "leicester",
         "afc bournemouth": "bournemouth",
     }
@@ -32,8 +31,30 @@ def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
     """
     يجلب جدول الترتيب الكامل من football-data.org.
     """
-    # ... (This function remains the same as the previous version) ...
-    # ... It fetches the data and returns the pandas DataFrame ...
+    if not api_key:
+        raise ValueError("مفتاح football-data.org API مطلوب.")
+
+    headers = {"X-Auth-Token": api_key}
+    url = f"{API_URL}competitions/{competition_code}/standings"
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        
+        standings = data.get('standings', [])
+        if not standings or 'table' not in standings[0]:
+            return None
+            
+        df = pd.DataFrame(standings[0]['table'])
+        df['original_team_name'] = df['team'].apply(lambda x: x.get('name', ''))
+        
+        print("✅ تم سحب جدول الإحصائيات بنجاح من football-data.org!")
+        return df
+
+    except Exception as e:
+        print(f"❌ حدث خطأ أثناء سحب الإحصائيات من API: {e}")
+        return None
 
 def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame, debug=True):
     """
@@ -42,7 +63,7 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame, debug=True)
     if league_df is None or league_df.empty:
         return None
 
-    best_match_score = 0.6  # خفضنا درجة التشابه المطلوبة لتكون أكثر مرونة
+    best_match_score = 0.6
     best_match_stats = None
 
     name_to_find_norm = _normalize_team_name(team_name_to_find)
@@ -61,7 +82,6 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame, debug=True)
         score = difflib.SequenceMatcher(None, name_to_find_norm, normalized_name_from_df).ratio()
         
         if debug:
-            # نطبع فقط المقارنات التي تتجاوز درجة تشابه معينة لتجنب الفوضى
             if score > 0.3:
                 print(f"  - مقارنة مع '{normalized_name_from_df}': درجة التشابه = {score:.2f}")
 
@@ -73,7 +93,8 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame, debug=True)
             avg_goals_per_match = league_total_goals / league_total_matches
 
             attack_strength = (row['goalsFor'] / row['playedGames']) / (avg_goals_per_match / 2)
-            defense_strength = a(row['goalsAgainst'] / row['playedGames']) / (avg_goals_per_match / 2)
+            # --- ::: This is the corrected line ::: ---
+            defense_strength = (row['goalsAgainst'] / row['playedGames']) / (avg_goals_per_match / 2)
             
             best_match_stats = {
                 "attack": attack_strength,
@@ -91,6 +112,5 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame, debug=True)
             for name in all_team_names_from_df:
                 print(f"  -> {_normalize_team_name(name)}")
         print("="*50 + "\n")
-
 
     return best_match_stats
