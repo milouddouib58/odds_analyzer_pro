@@ -1,4 +1,4 @@
-# odds_math.py (النسخة المصححة)
+# odds_math.py
 import math
 
 def aggregate_prices(prices: list, mode: str = 'median') -> float:
@@ -25,23 +25,17 @@ def normalize_proportional(implied_probs: dict) -> dict:
     return {k: v / total_prob for k, v in implied_probs.items()}
 
 def shin_fair_probs(implied_probs: dict) -> dict:
-    # --- ↓↓↓ هذا هو السطر الجديد والمهم لي زدناه ↓↓↓ ---
-    # إذا كانت أي احتمالية تساوي صفر، استخدم الطريقة البسيطة لتجنب القسمة على صفر
     if any(p <= 0 for p in implied_probs.values()):
         return normalize_proportional(implied_probs)
-    # --- ↑↑↑ نهاية التعديل ↑↑↑ ---
 
-    # طريقة Shin لإزالة الهامش
     if not implied_probs: return {}
     n = len(implied_probs)
     if n == 0: return {}
     
     def sum_diff_sq(z, probs):
-        # هنا كانت تحدث المشكلة، لكن الشرط لي زدناه الفوق يحمينا منها
         return sum(((p - z) / (1 - z if p < z else p))**2 for p in probs) - 1
 
     implied_values = list(implied_probs.values())
-    
     total_prob = sum(implied_values)
     if total_prob < 1.0:
         return normalize_proportional(implied_probs)
@@ -75,9 +69,24 @@ def kelly_suggestions(fair_probs: dict, book_odds: dict, bankroll: float, kelly_
             stake_amount = bankroll * stake_fraction
             
             suggestions[outcome] = {
-                "edge": edge,
-                "kelly_fraction": kelly_fraction,
-                "stake_fraction": stake_fraction,
-                "stake_amount": stake_amount
+                "edge": edge, "kelly_fraction": kelly_fraction,
+                "stake_fraction": stake_fraction, "stake_amount": stake_amount
             }
     return suggestions
+
+def analyze_market_depth(prices: list):
+    """
+    تحليل عمق السوق: حساب المتوسط، الانحراف المعياري، والبحث عن القيم الشاردة.
+    """
+    if len(prices) < 2:
+        return {"mean": 0, "std_dev": 0, "outliers": []}
+
+    mean = sum(prices) / len(prices)
+    variance = sum([(p - mean) ** 2 for p in prices]) / len(prices)
+    std_dev = math.sqrt(variance)
+    
+    # تعريف القيمة الشاردة بأنها أي سعر يتجاوز المتوسط بـ 1.5 انحراف معياري
+    outlier_threshold = mean + (1.5 * std_dev)
+    outliers = [p for p in prices if p > outlier_threshold]
+    
+    return {"mean": mean, "std_dev": std_dev, "outliers": outliers}
