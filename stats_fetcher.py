@@ -1,10 +1,29 @@
-# stats_fetcher.py (النسخة النهائية مع البحث الذكي)
+# stats_fetcher.py (النسخة الكاملة والمصححة)
 import os
 import requests
 import pandas as pd
 import difflib # مكتبة للمقارنة بالتشابه
 
 API_URL = "https://api.football-data.org/v4/"
+
+def _normalize_team_name(name: str) -> str:
+    """
+    يوحد أسماء الفرق لتسهيل العثور عليها.
+    """
+    name = name.lower().replace(" fc", "").replace(" afc", "").replace(" & ", " and ")
+    
+    team_name_map = {
+        "wolverhampton wanderers": "wolves",
+        "nottingham forest": "nott'm forest",
+        "manchester city": "man city",
+        "manchester united": "man utd",
+        "newcastle united": "newcastle",
+        "tottenham hotspur": "tottenham",
+        "brighton and hove albion": "brighton",
+        "west ham united": "west ham",
+    }
+    
+    return team_name_map.get(name, name)
 
 def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
     """
@@ -26,7 +45,6 @@ def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
             return None
             
         df = pd.DataFrame(standings[0]['table'])
-        # إضافة عمود بالاسم الأصلي قبل التعديل
         df['original_team_name'] = df['team'].apply(lambda x: x.get('name', ''))
         
         print("✅ تم سحب جدول الإحصائيات بنجاح من football-data.org!")
@@ -43,24 +61,20 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame):
     if league_df is None or league_df.empty:
         return None
 
-    best_match_score = 0.7  # درجة التشابه المطلوبة كحد أدنى
+    best_match_score = 0.7
     best_match_stats = None
 
-    # تطبيع الاسم المطلوب للبحث
-    name_to_find_norm = team_name_to_find.lower().replace(" fc", "")
+    name_to_find_norm = _normalize_team_name(team_name_to_find)
 
     for index, row in league_df.iterrows():
-        # تطبيع الأسماء في جدول الإحصائيات للمقارنة
         original_name = row['original_team_name']
-        normalized_name = original_name.lower().replace(" fc", "").replace(" afc", "")
+        normalized_name_from_df = _normalize_team_name(original_name)
         
-        # حساب درجة التشابه بين الاسمين
-        score = difflib.SequenceMatcher(None, name_to_find_norm, normalized_name).ratio()
+        score = difflib.SequenceMatcher(None, name_to_find_norm, normalized_name_from_df).ratio()
         
         if score > best_match_score:
             best_match_score = score
             
-            # --- حساب قوة الهجوم والدفاع للفريق الذي تم العثور عليه ---
             league_total_goals = league_df['goalsFor'].sum()
             league_total_matches = league_df['playedGames'].sum() / 2
             avg_goals_per_match = league_total_goals / league_total_matches
@@ -71,7 +85,7 @@ def find_team_stats(team_name_to_find: str, league_df: pd.DataFrame):
             best_match_stats = {
                 "attack": attack_strength,
                 "defense": defense_strength,
-                "found_name": original_name # إرجاع الاسم الأصلي للتأكيد
+                "found_name": original_name
             }
 
     return best_match_stats
