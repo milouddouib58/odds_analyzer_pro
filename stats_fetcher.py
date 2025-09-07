@@ -1,4 +1,4 @@
-# stats_fetcher.py (النسخة المصححة مع مترجم الأسماء)
+# stats_fetcher.py (النسخة النهائية مع مترجم أسماء ذكي)
 import os
 import requests
 import pandas as pd
@@ -7,15 +7,26 @@ API_URL = "https://api.football-data.org/v4/"
 
 def _normalize_team_name(name: str) -> str:
     """
-    يوحد أسماء الفرق لتسهيل العثور عليها بين مصادر البيانات المختلفة.
-    مثال: "Manchester United FC" -> "manchester united"
+    يوحد أسماء الفرق لتسهيل العثور عليها.
+    هذا هو الجزء الأهم لحل مشكلة عدم تطابق الأسماء.
     """
-    # يمكنك إضافة استثناءات خاصة هنا إذا لزم الأمر
-    # special_cases = {"Wolverhampton Wanderers": "Wolves"}
-    # if name in special_cases:
-    #     name = special_cases[name]
+    name = name.lower().replace(" fc", "").replace(" afc", "").replace(" & ", " and ")
     
-    return name.lower().replace(" fc", "").replace(" afc", "").replace(" & ", " and ")
+    # ::: قاموس الترجمة الذكي :::
+    team_name_map = {
+        "wolverhampton wanderers": "wolves",
+        "nottingham forest": "nott'm forest",
+        "manchester city": "man city",
+        "manchester united": "man utd",
+        "newcastle united": "newcastle",
+        "tottenham hotspur": "tottenham",
+        "brighton and hove albion": "brighton",
+        "west ham united": "west ham",
+        # يمكنك إضافة فرق أخرى هنا حسب الحاجة
+    }
+    
+    # نطبق الترجمة إذا وجدنا الاسم في القاموس
+    return team_name_map.get(name, name)
 
 def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
     """
@@ -43,7 +54,6 @@ def get_league_stats_from_api(api_key: str, competition_code: str = "PL"):
         league_total_goals = df['goalsFor'].sum()
         league_total_matches = df['playedGames'].sum() / 2
         
-        # تجنب القسمة على صفر إذا لم تكن هناك مباريات
         if league_total_matches == 0: return None
         avg_goals_per_match = league_total_goals / league_total_matches
 
