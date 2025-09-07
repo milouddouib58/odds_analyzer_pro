@@ -63,7 +63,7 @@ def load_api_keys():
     if gemini_key: os.environ["GEMINI_API_KEY"] = gemini_key
     return odds_key, gemini_key, football_data_key
 
-odds_api_key, gemini_api_key, football_data_key = load_api_keys()
+odds_api_key, gemini_key, football_data_key = load_api_keys()
 
 # --- إعدادات المحفظة والسوق ---
 st.sidebar.header("🏦 إدارة المحفظة")
@@ -85,6 +85,23 @@ except Exception as e:
     st.error(f"لا يمكن جلب الرياضات. تأكد من صحة مفتاح The Odds API. الخطأ: {e}")
     st.stop()
 
+# --- اختيار الدوري للإحصائيات ---
+st.sidebar.header("📊 إعدادات الإحصائيات")
+LEAGUE_CODES = {
+    "Premier League (England)": "PL",
+    "La Liga (Spain)": "PD",
+    "Serie A (Italy)": "SA",
+    "Bundesliga (Germany)": "BL1",
+    "Ligue 1 (France)": "FL1",
+    "Eredivisie (Netherlands)": "DED",
+    "Primeira Liga (Portugal)": "PPL",
+}
+selected_league_name = st.sidebar.selectbox(
+    "اختر الدوري لجلب الإحصائيات منه:",
+    list(LEAGUE_CODES.keys())
+)
+competition_code = LEAGUE_CODES[selected_league_name]
+
 # --- جلب البيانات ---
 if st.button("🚀 جلب وتحليل المباريات"):
     if not odds_api_key or not football_data_key:
@@ -99,8 +116,8 @@ if st.button("🚀 جلب وتحليل المباريات"):
                 st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
                 st.session_state["events_data"] = None
         
-        with st.spinner("جاري سحب الإحصائيات من football-data.org..."):
-            league_df = get_league_stats_from_api(api_key=football_data_key, competition_code="PL") 
+        with st.spinner(f"جاري سحب إحصائيات '{selected_league_name}' من football-data.org..."):
+            league_df = get_league_stats_from_api(api_key=football_data_key, competition_code=competition_code) 
             if league_df is None:
                 st.error("فشل في سحب جدول الإحصائيات.")
                 st.session_state['league_df'] = None
@@ -131,7 +148,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
             fair_h2h = shin_fair_probs(imps_h2h)
             sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale)
         
-        # 2. التحليل الإحصائي (بواسون) باستخدام البحث الذكي
+        # 2. التحليل الإحصائي (بواسون)
         poisson_probs = None
         home_stats, away_stats = None, None
         
@@ -146,7 +163,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                     away_attack=away_stats['attack'], away_defense=away_stats['defense']
                 )
 
-        with tab1: # التحليل المزدوج
+        with tab1:
             st.header("مقارنة بين رأي السوق ورأي الإحصاء")
             col1, col2 = st.columns(2)
             with col1:
@@ -172,7 +189,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                         if not home_stats: st.error(f"- لم يتم العثور على إحصائيات مطابقة للفريق: '{home_team_name}'")
                         if not away_stats: st.error(f"- لم يتم العثور على إحصائيات مطابقة للفريق: '{away_team_name}'")
 
-        with tab2: # تفاصيل 1x2
+        with tab2:
             st.header("تحليل سوق نتيجة المباراة (1x2)")
             if not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
                 st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق حسب المعايير الحالية.")
@@ -186,7 +203,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                             c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
                             c3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
 
-        with tab3: # تفاصيل الأهداف
+        with tab3:
             st.header("تحليل سوق الأهداف (Over/Under)")
             totals_lines = odds_api.extract_totals_lines(event)
             if not totals_lines:
@@ -214,7 +231,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                 else:
                     st.warning("لا توجد أسعار كافية لتحليل هذا الخط.")
 
-        with tab4: # استشارة Gemini
+        with tab4:
             st.header("اطلب استشارة من 'الاستراتيجي'")
             if st.button("حلل يا استراتيجي 🧠"):
                 if not gemini_api_key:
