@@ -1,27 +1,22 @@
-# app.py (النسخة الكاملة والنهائية)
+# app.py
 # -*- coding: utf-8 -*-
 import os
 import streamlit as st
 from datetime import datetime
 
-# --- استيراد الدوال من الملفات المساعدة ---
+# --- استيراد الدوال ---
 try:
-    from odds_math import (
-        aggregate_prices, implied_from_decimal, shin_fair_probs, overround,
-        kelly_suggestions, normalize_proportional, poisson_prediction
-    )
-    from gemini_helper import analyze_with_gemini
+    from odds_math import *
+    from gemini_helper import *
     import odds_provider_theoddsapi as odds_api
-    # استيراد دالة توحيد الأسماء والمترجم الجديد
     from stats_fetcher import get_league_stats_from_api, _normalize_team_name 
 except ImportError as e:
-    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة (app.py, odds_math.py, gemini_helper.py, stats_fetcher.py)!")
+    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
     st.stop()
 
-# --- إعدادات الصفحة ---
+# --- إعدادات الصفحة والـ CSS ---
 st.set_page_config(page_title="Odds Strategist AUTO", page_icon="🧠", layout="wide")
 
-# --- CSS مخصص للتصميم ---
 st.markdown("""
 <style>
     .prob-bar-container { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
@@ -102,13 +97,13 @@ if st.button("🚀 جلب وتحليل المباريات"):
                 st.success(f"تم جلب {len(events)} مباراة.")
             except Exception as e:
                 st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
-                st.session_state["events_data"] = None # مسح البيانات القديمة عند حدوث خطأ
+                st.session_state["events_data"] = None
         
         with st.spinner("جاري سحب الإحصائيات من football-data.org..."):
             league_stats = get_league_stats_from_api(api_key=football_data_key, competition_code="PL") 
             if league_stats is None:
                 st.error("فشل في سحب الإحصائيات.")
-                st.session_state['league_stats'] = None # مسح البيانات القديمة عند حدوث خطأ
+                st.session_state['league_stats'] = None
             else:
                 st.session_state['league_stats'] = league_stats
 
@@ -142,9 +137,13 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
         
         # 2. التحليل الإحصائي (بواسون)
         poisson_probs = None
+        home_stats_found, away_stats_found = False, False
         if league_stats:
             home_stats = league_stats.get(normalized_home)
             away_stats = league_stats.get(normalized_away)
+            if home_stats: home_stats_found = True
+            if away_stats: away_stats_found = True
+            
             if home_stats and away_stats:
                 poisson_probs = poisson_prediction(
                     home_attack=home_stats['attack'], home_defense=home_stats['defense'],
@@ -169,7 +168,14 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                     st.markdown(render_prob_bar("التعادل", poisson_probs.get('draw', 0), '#f5a623'), unsafe_allow_html=True)
                     st.markdown(render_prob_bar(away_team_name, poisson_probs.get('away', 0), '#e24a4a'), unsafe_allow_html=True)
                 else:
-                    st.warning(f"لم يتم العثور على إحصائيات لـ '{home_team_name}' أو '{away_team_name}' لتحليل بواسون.")
+                    st.warning("تحليل بواسون غير متوفر. تحقق من الأسباب التالية:")
+                    if not league_stats:
+                        st.error("- فشل تحميل بيانات الإحصائيات.")
+                    else:
+                        if not home_stats_found:
+                            st.error(f"- لم يتم العثور على إحصائيات للفريق: '{home_team_name}' (بحثنا عن '{normalized_home}')")
+                        if not away_stats_found:
+                            st.error(f"- لم يتم العثور على إحصائيات للفريق: '{away_team_name}' (بحثنا عن '{normalized_away}')")
 
         with tab2:
             st.header("تحليل سوق نتيجة المباراة (1x2)")
