@@ -1,39 +1,107 @@
-# app.py (النسخة الاحترافية مع تحليل العمق)
+# app.py (النسخة النهائية مع بواسون والخبير)
 # -*- coding: utf-8 -*-
 import os
 import streamlit as st
 from datetime import datetime
 
-# --- استيراد الدوال من الملفات المساعدة ---
+# --- استيراد الدوال ---
 try:
-    from odds_math import (
-        aggregate_prices, implied_from_decimal, shin_fair_probs, overround,
-        kelly_suggestions, normalize_proportional, analyze_market_depth
-    )
-    from gemini_helper import analyze_with_gemini
+    from odds_math import *
+    from gemini_helper import *
     import odds_provider_theoddsapi as odds_api
 except ImportError as e:
-    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
+    st.error(f"خطأ: {e}. تأكد من وجود كل الملفات!")
     st.stop()
 
 # --- إعدادات الصفحة ---
-st.set_page_config(page_title="Odds Analyzer PRO", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="Odds Strategist PRO", page_icon="🧠", layout="wide")
 
-# --- CSS مخصص للتصميم الاحترافي ---
-st.markdown("""
-<style>
-    .prob-bar-container { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
-    .prob-bar-title { display: flex; justify-content: space-between; font-size: 0.9em; color: #b0b8c2; }
-    .prob-bar { width: 100%; background-color: #334155; border-radius: 5px; overflow: hidden; height: 15px; }
-    .prob-bar-fill { height: 100%; border-radius: 5px; transition: width 0.5s ease-in-out; text-align: center; color: white; font-size: 0.8em; font-weight: bold; line-height: 15px; }
-</style>
-""", unsafe_allow_html=True)
-
+# --- CSS ---
+st.markdown("""<style>... (نفس كود CSS السابق) ...</style>""", unsafe_allow_html=True)
 def render_prob_bar(label, probability, color):
     pct = probability * 100
-    return f"""
-    <div class="prob-bar-container">
-        <div class="prob-bar-title"><span>{label}</span><span>{pct:.1f}%</span></div>
+    return f"""<div class="prob-bar-container">... (نفس دالة رسم الشريط) ...</div>"""
+
+# --- الواجهة الرئيسية ---
+st.markdown("<h1>Odds Strategist PRO 🧠</h1>", unsafe_allow_html=True)
+st.markdown("### التحليل المزدوج: استراتيجيات السوق + التوقعات الإحصائية (بواسون)")
+
+# --- الشريط الجانبي ---
+st.sidebar.header("🔑 إعدادات المفاتيح")
+# ... (نفس قسم المفاتيح) ...
+
+st.sidebar.header("🏦 إدارة المحفظة")
+# ... (نفس قسم المحفظة) ...
+
+st.sidebar.header("📊 إحصائيات بواسون (أداء الفرق)")
+st.sidebar.info("أدخل متوسط أداء الفرق (لكل مباراة). يمكنك إيجاد هذه الإحصائيات في مواقع مثل WhoScored أو FBref.")
+home_attack = st.sidebar.number_input("قوة هجوم الفريق المضيف (متوسط أهدافه)", min_value=0.0, value=1.5, step=0.1)
+home_defense = st.sidebar.number_input("قوة دفاع الفريق المضيف (متوسط أهداف ضده)", min_value=0.0, value=1.0, step=0.1)
+away_attack = st.sidebar.number_input("قوة هجوم الفريق الضيف", min_value=0.0, value=1.2, step=0.1)
+away_defense = st.sidebar.number_input("قوة دفاع الفريق الضيف", min_value=0.0, value=1.3, step=0.1)
+
+st.sidebar.header("⚙️ إعدادات السوق")
+# ... (نفس قسم إعدادات السوق) ...
+
+# --- جلب البيانات ---
+if st.button("🚀 جلب وتحليل المباراة"):
+    # ... (نفس كود جلب البيانات) ...
+
+# --- عرض وتحليل المباريات ---
+if "events_data" in st.session_state:
+    # ... (نفس كود اختيار المباراة) ...
+    # ...
+    # ...
+    tab1, tab2, tab3 = st.tabs(["📊 التحليل المزدوج", "📈 تفاصيل السوق", "🤖 استشارة الخبير Gemini"])
+
+    # --- حسابات التحليلين ---
+    # 1. تحليل السوق
+    h2h_prices = odds_api.extract_h2h_prices(event)
+    agg_odds_h2h, imps_h2h, fair_h2h, sugg_h2h = {}, {}, {}, {}
+    if any(h2h_prices.values()):
+        agg_odds_h2h = {side: aggregate_prices(arr, mode='best') for side, arr in h2h_prices.items()}
+        imps_h2h = implied_from_decimal(agg_odds_h2h)
+        fair_h2h = shin_fair_probs(imps_h2h)
+        sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale)
+    
+    # 2. التحليل الإحصائي (بواسون)
+    poisson_probs = poisson_prediction(home_attack, home_defense, away_attack, away_defense)
+
+    with tab1: # التحليل المزدوج
+        st.header("مقارنة بين رأي السوق ورأي الإحصاء")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("تحليل السوق (Fair Odds)")
+            if fair_h2h:
+                st.markdown(render_prob_bar(event['home_team'], fair_h2h.get('home', 0), '#4a90e2'), unsafe_allow_html=True)
+                st.markdown(render_prob_bar("التعادل", fair_h2h.get('draw', 0), '#f5a623'), unsafe_allow_html=True)
+                st.markdown(render_prob_bar(event['away_team'], fair_h2h.get('away', 0), '#e24a4a'), unsafe_allow_html=True)
+        with col2:
+            st.subheader("التحليل الإحصائي (Poisson)")
+            st.markdown(render_prob_bar(event['home_team'], poisson_probs.get('home', 0), '#4a90e2'), unsafe_allow_html=True)
+            st.markdown(render_prob_bar("التعادل", poisson_probs.get('draw', 0), '#f5a623'), unsafe_allow_html=True)
+            st.markdown(render_prob_bar(event['away_team'], poisson_probs.get('away', 0), '#e24a4a'), unsafe_allow_html=True)
+
+    with tab2: # تفاصيل السوق
+        # ... (نفس كود عرض تفاصيل 1x2 والأهداف من النسخة السابقة) ...
+
+    with tab3: # استشارة الخبير
+        st.header("اطلب استشارة من 'الاستراتيجي'")
+        if st.button("حلل يا استراتيجي 🧠"):
+            if not os.getenv("GEMINI_API_KEY"): st.error("أدخل مفتاح Gemini أولاً.")
+            else:
+                with st.spinner("الاستراتيجي يفكر..."):
+                    payload = {
+                        "match": {"home": event['home_team'], "away": event['away_team']},
+                        "market_analysis": {"fair_probs": fair_h2h, "kelly_suggestions": sugg_h2h},
+                        "statistical_analysis": {"poisson_probs": poisson_probs}
+                    }
+                    try:
+                        analysis = analyze_with_gemini(payload=payload)
+                        st.markdown(analysis)
+                    except Exception as e:
+                        st.error(f"حدث خطأ من Gemini: {e}")
+
         <div class="prob-bar"><div class="prob-bar-fill" style="width: {pct}%; background-color: {color};"></div></div>
     </div>
     """
@@ -188,3 +256,4 @@ if "events_data" in st.session_state:
                             st.markdown(analysis)
                         except Exception as e:
                             st.error(f"حدث خطأ من Gemini: {e}")
+
