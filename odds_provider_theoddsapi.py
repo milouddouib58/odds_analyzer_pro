@@ -52,11 +52,9 @@ def extract_totals_lines(event: dict) -> dict:
                 for outcome in market.get("outcomes", []):
                     line_point = outcome.get("point")
                     price = outcome.get("price")
-                    side = outcome.get("name").lower() # "Over" or "Under"
-                    
+                    side = outcome.get("name").lower()
                     if line_point not in lines:
                         lines[line_point] = {"over": [], "under": []}
-                    
                     if side in lines[line_point]:
                         lines[line_point][side].append(price)
     return {str(k): v for k, v in lines.items()}
