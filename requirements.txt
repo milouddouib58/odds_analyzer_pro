@@ -1,6 +1,4 @@
 streamlit
 requests
 google-generativeai
-pandas
-lxml
-beautifulsoup4
+
