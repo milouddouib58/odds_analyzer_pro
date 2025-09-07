@@ -1,4 +1,4 @@
-# app.py
+# app.py (النسخة النهائية مع قراءة Secrets الذكية)
 # -*- coding: utf-8 -*-
 import os
 import streamlit as st
@@ -12,9 +12,9 @@ try:
     )
     from gemini_helper import analyze_with_gemini
     import odds_provider_theoddsapi as odds_api
-    from stats_fetcher import get_league_stats_from_api # استيراد الدالة الجديدة
+    from stats_fetcher import get_league_stats_from_api
 except ImportError as e:
-    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة (app.py, odds_math.py, gemini_helper.py, stats_fetcher.py)!")
+    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
     st.stop()
 
 # --- إعدادات الصفحة ---
@@ -44,51 +44,81 @@ def render_prob_bar(label, probability, color):
 st.markdown("<h1>Odds Strategist AUTO 🤖</h1>", unsafe_allow_html=True)
 st.markdown("### التحليل الأوتوماتيكي: استراتيجيات السوق + التوقعات الإحصائية (بواسون)")
 
-# --- الشريط الجانبي للإعدادات ---
-st.sidebar.header("🔑 إعدادات المفاتيح")
-odds_api_key = st.sidebar.text_input("The Odds API Key", type="password")
-gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password")
-football_data_key = st.sidebar.text_input("Football Data API Key", type="password")
+# --- الدالة الذكية لقراءة المفاتيح ---
+def load_api_keys():
+    """
+    تحميل المفاتيح من Streamlit Secrets أولاً، وإذا لم تجدها، تطلبها من المستخدم.
+    """
+    st.sidebar.header("🔑 إعدادات المفاتيح")
+    
+    # Odds API Key
+    if 'ODDS_API_KEY' in st.secrets and st.secrets['ODDS_API_KEY']:
+        odds_key = st.secrets['ODDS_API_KEY']
+        st.sidebar.success("✅ Odds API Key loaded from Secrets.")
+    else:
+        odds_key = st.sidebar.text_input("The Odds API Key", type="password")
+    
+    # Gemini API Key
+    if 'GEMINI_API_KEY' in st.secrets and st.secrets['GEMINI_API_KEY']:
+        gemini_key = st.secrets['GEMINI_API_KEY']
+        st.sidebar.success("✅ Gemini API Key loaded from Secrets.")
+    else:
+        gemini_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-if odds_api_key: os.environ["ODDS_API_KEY"] = odds_api_key
-if gemini_api_key: os.environ["GEMINI_API_KEY"] = gemini_api_key
+    # Football Data API Key
+    if 'FOOTBALL_DATA_API_KEY' in st.secrets and st.secrets['FOOTBALL_DATA_API_KEY']:
+        football_data_key = st.secrets['FOOTBALL_DATA_API_KEY']
+        st.sidebar.success("✅ Football Data Key loaded from Secrets.")
+    else:
+        football_data_key = st.sidebar.text_input("Football Data API Key", type="password")
 
+    # وضع المفاتيح في بيئة التشغيل ليتم استخدامها في الملفات الأخرى
+    if odds_key: os.environ["ODDS_API_KEY"] = odds_key
+    if gemini_key: os.environ["GEMINI_API_KEY"] = gemini_key
+
+    return odds_key, gemini_key, football_data_key
+
+odds_api_key, gemini_api_key, football_data_key = load_api_keys()
+
+# --- إعدادات المحفظة والسوق ---
 st.sidebar.header("🏦 إدارة المحفظة")
 bankroll = st.sidebar.number_input("حجم المحفظة ($)", min_value=1.0, value=100.0, step=10.0)
-kelly_scale = st.sidebar.slider("معامل كيلي (Kelly Scale)", 0.05, 1.0, 0.25, 0.05, help="لتخفيف المخاطرة، استخدم قيمة أقل من 1 (مثلاً 0.25 لربع كيلي).")
+kelly_scale = st.sidebar.slider("معامل كيلي (Kelly Scale)", 0.05, 1.0, 0.25, 0.05)
 
 st.sidebar.header("⚙️ إعدادات السوق")
 try:
+    if not odds_api_key:
+        st.sidebar.warning("الرجاء إدخال مفتاح The Odds API لبدء التحليل.")
+        st.stop()
+        
     sports = odds_api.list_sports()
     sport_options = {f"{s.get('group')} - {s.get('title')}": s.get("key") for s in sports}
     selected_sport_label = st.sidebar.selectbox("اختر الرياضة:", list(sport_options.keys()))
     sport_key = sport_options[selected_sport_label]
-except Exception:
-    st.sidebar.error("لا يمكن جلب الرياضات. تأكد من مفتاح The Odds API.")
-    st.stop()
+    regions = st.sidebar.multiselect("المناطق:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
+    markets = st.sidebar.multiselect("الأسواق:", ["h2h", "totals"], default=["h2h", "totals"])
 
-regions = st.sidebar.multiselect("المناطق:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
-markets = st.sidebar.multiselect("الأسواق:", ["h2h", "totals"], default=["h2h", "totals"])
+except Exception as e:
+    st.error(f"لا يمكن جلب الرياضات. تأكد من صحة مفتاح The Odds API. الخطأ: {e}")
+    st.stop()
 
 # --- جلب البيانات ---
 if st.button("🚀 جلب وتحليل المباريات"):
-    if not os.getenv("ODDS_API_KEY") or not football_data_key:
+    if not odds_api_key or not football_data_key:
         st.error("يرجى إدخال كل مفاتيح API المطلوبة في الشريط الجانبي (Odds API و Football Data).")
     else:
         with st.spinner(f"جاري جلب مباريات {selected_sport_label}..."):
             try:
                 events, meta = odds_api.fetch_odds_for_sport(sport_key, ",".join(regions), ",".join(markets))
                 st.session_state["events_data"] = {"events": events, "meta": meta}
-                st.success(f"تم جلب {len(events)} مباراة. (الطلبات المتبقية: {meta.get('requests_remaining')})")
+                st.success(f"تم جلب {len(events)} مباراة.")
             except Exception as e:
                 st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
         
-        # سحب الإحصائيات أوتوماتيكيًا
         with st.spinner("جاري سحب الإحصائيات من football-data.org..."):
-            # يمكنك تغيير "PL" (Premier League) إلى كود أي دوري تريده
             league_stats = get_league_stats_from_api(api_key=football_data_key, competition_code="PL") 
             if not league_stats:
-                st.error("فشل في سحب الإحصائيات. لا يمكن إكمال تحليل بواسون.")
+                st.error("فشل في سحب الإحصائيات.")
             else:
                 st.session_state['league_stats'] = league_stats
 
@@ -109,7 +139,6 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
 
         tab1, tab2, tab3 = st.tabs(["📊 التحليل المزدوج", "📈 تفاصيل السوق", "🤖 استشارة الخبير Gemini"])
 
-        # --- حسابات التحليلين ---
         # 1. تحليل السوق
         h2h_prices = odds_api.extract_h2h_prices(event)
         agg_odds_h2h, imps_h2h, fair_h2h, sugg_h2h = {}, {}, {}, {}
@@ -119,7 +148,7 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
             fair_h2h = shin_fair_probs(imps_h2h)
             sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale)
         
-        # 2. التحليل الإحصائي (بواسون) - أوتوماتيكي
+        # 2. التحليل الإحصائي (بواسون)
         home_stats = league_stats.get(home_team_name)
         away_stats = league_stats.get(away_team_name)
         poisson_probs = None
@@ -129,7 +158,7 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
                 away_attack=away_stats['attack'], away_defense=away_stats['defense']
             )
 
-        with tab1: # التحليل المزدوج
+        with tab1:
             st.header("مقارنة بين رأي السوق ورأي الإحصاء")
             col1, col2 = st.columns(2)
             with col1:
@@ -145,9 +174,9 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
                     st.markdown(render_prob_bar("التعادل", poisson_probs.get('draw', 0), '#f5a623'), unsafe_allow_html=True)
                     st.markdown(render_prob_bar(away_team_name, poisson_probs.get('away', 0), '#e24a4a'), unsafe_allow_html=True)
                 else:
-                    st.warning(f"لم يتم العثور على إحصائيات لـ '{home_team_name}' أو '{away_team_name}'. تحليل بواسون غير متوفر.")
+                    st.warning(f"لم يتم العثور على إحصائيات لـ '{home_team_name}' أو '{away_team_name}'.")
 
-        with tab2: # تفاصيل السوق
+        with tab2:
             st.header("تحليل سوق نتيجة المباراة (1x2)")
             if not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
                 st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق حسب المعايير الحالية.")
@@ -161,10 +190,10 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
                             c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
                             c3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
 
-        with tab3: # استشارة الخبير
+        with tab3:
             st.header("اطلب استشارة من 'الاستراتيجي'")
             if st.button("حلل يا استراتيجي 🧠"):
-                if not os.getenv("GEMINI_API_KEY"):
+                if not gemini_api_key:
                     st.error("أدخل مفتاح Gemini API أولاً.")
                 else:
                     with st.spinner("الاستراتيجي يفكر..."):
@@ -178,3 +207,4 @@ if "events_data" in st.session_state and "league_stats" in st.session_state:
                             st.markdown(analysis)
                         except Exception as e:
                             st.error(f"حدث خطأ من Gemini: {e}")
+
