@@ -1,4 +1,4 @@
-# app.py (النسخة الاحترافية المطورة)
+# app.py (النسخة الاحترافية مع تحليل العمق)
 # -*- coding: utf-8 -*-
 import os
 import streamlit as st
@@ -7,12 +7,8 @@ from datetime import datetime
 # --- استيراد الدوال من الملفات المساعدة ---
 try:
     from odds_math import (
-        aggregate_prices,
-        implied_from_decimal,
-        shin_fair_probs,
-        overround,
-        kelly_suggestions,
-        normalize_proportional
+        aggregate_prices, implied_from_decimal, shin_fair_probs, overround,
+        kelly_suggestions, normalize_proportional, analyze_market_depth
     )
     from gemini_helper import analyze_with_gemini
     import odds_provider_theoddsapi as odds_api
@@ -34,7 +30,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def render_prob_bar(label, probability, color):
-    """دالة لرسم شريط الاحتمالات"""
     pct = probability * 100
     return f"""
     <div class="prob-bar-container">
@@ -131,6 +126,32 @@ if "events_data" in st.session_state:
                             col1.metric("أفضل سعر في السوق", f"{agg_odds_h2h.get(side, 0):.2f}")
                             col2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
                             col3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
+            
+            # --- ::: التعديل الجديد يبدأ هنا ::: ---
+            st.markdown("---")
+            st.header("🔬 تحليل عمق السوق (Market Depth)")
+            with st.expander("شرح تحليل العمق"):
+                st.write("""
+                هذا التحليل يقيس "إجماع" السوق. 
+                - **متوسط السعر:** يعطيك السعر الوسطي لكل شركات المراهنات.
+                - **تشتت الأسعار (الانحراف):** رقم صغير يعني أن الشركات متفقة، ورقم كبير يعني أن هناك اختلافًا في الآراء وفرصًا محتملة.
+                - **الأسعار الشاردة:** هي أسعار عالية جدًا مقارنة ببقية السوق، وتمثل أفضل الفرص.
+                """)
+            
+            if h2h_prices:
+                col1, col2, col3 = st.columns(3)
+                sides = {'home': event['home_team'], 'draw': 'التعادل', 'away': event['away_team']}
+                for key, name in sides.items():
+                    analysis = analyze_market_depth(h2h_prices[key])
+                    container = col1 if key == 'home' else col2 if key == 'draw' else col3
+                    with container:
+                        st.subheader(name)
+                        st.metric(label="متوسط السعر", value=f"{analysis['mean']:.2f}")
+                        st.metric(label="تشتت الأسعار", value=f"{analysis['std_dev']:.2f}")
+                        if analysis['outliers']:
+                            st.success(f"🚨 أسعار شاردة: {analysis['outliers']}")
+            # --- ::: نهاية التعديل ::: ---
+
         with tab3:
             st.header("تحليل سوق الأهداف (Over/Under)")
             if not totals_lines:
