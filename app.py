@@ -74,7 +74,7 @@ try:
     selected_sport_label = st.sidebar.selectbox("اختر الرياضة:", list(sport_options.keys()))
     sport_key = sport_options[selected_sport_label]
     regions = st.sidebar.multiselect("المناطق:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
-    markets = st.sidebar.multiselect("الأسواق:", ["h2h"], default=["h2h"])
+    markets = st.sidebar.multiselect("الأسواق:", ["h2h", "totals"], default=["h2h", "totals"])
 except Exception as e:
     st.error(f"لا يمكن جلب الرياضات. تأكد من صحة مفتاح The Odds API. الخطأ: {e}")
     st.stop()
@@ -137,65 +137,107 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
             form_probs = calculate_form_probs(home_team_name, away_team_name, stats_df)
             xg_probs = calculate_xg_probs(home_team_name, away_team_name, stats_df)
 
-        st.header("🏛️ آراء مجلس الخبراء")
-        
-        def get_verdict(probs):
-            if not probs: return "بيانات ناقصة"
-            max_prob = max(probs, key=probs.get)
-            if max_prob == 'home': return f"فوز {home_team_name}"
-            if max_prob == 'away': return f"فوز {away_team_name}"
-            return "التعادل"
+        # --- عرض الواجهة بالتابات ---
+        tab1, tab2, tab3, tab4 = st.tabs(["🏛️ مجلس الخبراء", "📈 تفاصيل 1x2", "⚽️ تفاصيل الأهداف", "🤖 استشارة Gemini"])
 
-        verdicts = {
-            "market": get_verdict(fair_h2h),
-            "poisson": get_verdict(poisson_probs),
-            "form": get_verdict(form_probs),
-            "xg": get_verdict(xg_probs)
-        }
+        with tab1:
+            st.header("آراء مجلس الخبراء")
+            def get_verdict(probs):
+                if not probs: return "بيانات ناقصة"
+                max_prob = max(probs, key=probs.get)
+                if max_prob == 'home': return f"فوز {home_team_name}"
+                if max_prob == 'away': return f"فوز {away_team_name}"
+                return "التعادل"
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.subheader("👨‍💼 خبير السوق")
-            st.metric("يرشح:", verdicts["market"])
-        with col2:
-            st.subheader("🎯 خبير الأهداف")
-            st.metric("يرشح:", verdicts["poisson"])
-        with col3:
-            st.subheader("📈 خبير الأداء الحالي")
-            st.metric("يرشح:", verdicts["form"])
-        with col4:
-            st.subheader("🔬 خبير الأداء النوعي")
-            st.metric("يرشح:", verdicts["xg"])
-        
-        st.markdown("---")
-        st.header("⭐ الخلاصة النهائية ومؤشر الثقة")
+            verdicts = {
+                "market": get_verdict(fair_h2h),
+                "poisson": get_verdict(poisson_probs),
+                "form": get_verdict(form_probs),
+                "xg": get_verdict(xg_probs)
+            }
 
-        # حساب مؤشر الثقة
-        votes = list(verdicts.values())
-        if "بيانات ناقصة" not in votes:
-            most_common_verdict = max(set(votes), key=votes.count)
-            num_votes = votes.count(most_common_verdict)
-            st.metric(f"النتيجة الأكثر ترجيحًا بناءً على أغلبية الخبراء:", 
-                      f"{most_common_verdict}",
-                      f"{num_votes} / 4 خبراء يتفقون")
-        else:
-            st.warning("لا يمكن حساب مؤشر الثقة بسبب نقص بعض التحليلات.")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.subheader("👨‍💼 خبير السوق")
+                st.metric("يرشح:", verdicts["market"])
+            with col2:
+                st.subheader("🎯 خبير الأهداف")
+                st.metric("يرشح:", verdicts["poisson"])
+            with col3:
+                st.subheader("📈 خبير الأداء الحالي")
+                st.metric("يرشح:", verdicts["form"])
+            with col4:
+                st.subheader("🔬 خبير الأداء النوعي")
+                st.metric("يرشح:", verdicts["xg"])
+            
+            st.markdown("---")
+            st.header("⭐ الخلاصة النهائية ومؤشر الثقة")
 
-        # استشارة Gemini
-        if st.button("اطلب تحليلاً مفصلاً من رئيس المجلس 🧠"):
-            if not gemini_api_key:
-                st.error("أدخل مفتاح Gemini API أولاً.")
+            votes = [v for v in verdicts.values() if v != "بيانات ناقصة"]
+            if len(votes) > 0:
+                most_common_verdict = max(set(votes), key=votes.count)
+                num_votes = votes.count(most_common_verdict)
+                st.metric(f"النتيجة الأكثر ترجيحًا:", f"{most_common_verdict}", f"{num_votes} / {len(votes)} خبراء يتفقون")
             else:
-                with st.spinner("الخبير الاستراتيجي يفكر..."):
-                    payload = {
-                        "match": {"home": home_team_name, "away": away_team_name},
-                        "market_analysis": {"verdict": verdicts["market"], "fair_probs": fair_h2h},
-                        "poisson_analysis": {"verdict": verdicts["poisson"], "probs": poisson_probs},
-                        "form_analysis": {"verdict": verdicts["form"], "probs": form_probs},
-                        "xg_analysis": {"verdict": verdicts["xg"], "probs": xg_probs}
-                    }
-                    try:
-                        analysis = analyze_with_gemini(payload=payload)
-                        st.markdown(analysis)
-                    except Exception as e:
-                        st.error(f"حدث خطأ من Gemini: {e}")
+                st.warning("لا يمكن حساب مؤشر الثقة بسبب نقص كل التحليلات.")
+
+        with tab2:
+            st.header("تحليل سوق نتيجة المباراة (1x2)")
+            if not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
+                st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق حسب المعايير الحالية.")
+            else:
+                for side, suggestion in sugg_h2h.items():
+                    if suggestion.get('edge', 0) > 0:
+                        with st.container(border=True):
+                            st.subheader(f"🎯 فرصة قيمة: {side.capitalize()}")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("أفضل سعر في السوق", f"{agg_odds_h2h.get(side, 0):.2f}")
+                            c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
+                            c3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
+
+        with tab3:
+            st.header("تحليل سوق الأهداف (Over/Under)")
+            totals_lines = odds_api.extract_totals_lines(event)
+            if not totals_lines:
+                st.info("لا توجد بيانات لسوق الأهداف لهذه المباراة.")
+            else:
+                selected_line = st.selectbox("اختر خط الأهداف:", sorted(totals_lines.keys(), key=float))
+                line_data = totals_lines[selected_line]
+                agg_odds_ou = {'over': aggregate_prices(line_data.get('over', []), 'best'), 'under': aggregate_prices(line_data.get('under', []), 'best')}
+                if agg_odds_ou['over'] > 0 and agg_odds_ou['under'] > 0:
+                    imps_ou = implied_from_decimal(agg_odds_ou)
+                    fair_ou = shin_fair_probs(imps_ou)
+                    sugg_ou = kelly_suggestions(fair_ou, agg_odds_ou, bankroll, kelly_scale)
+                    st.subheader(f"الاحتمالات العادلة لخط {selected_line}")
+                    st.markdown(render_prob_bar(f"Over {selected_line}", fair_ou.get('over', 0), '#22c55e'), unsafe_allow_html=True)
+                    st.markdown(render_prob_bar(f"Under {selected_line}", fair_ou.get('under', 0), '#ef4444'), unsafe_allow_html=True)
+                    if any(s.get('edge', 0) > 0 for s in sugg_ou.values()):
+                        for side, suggestion in sugg_ou.items():
+                            if suggestion.get('edge', 0) > 0:
+                                with st.container(border=True):
+                                    st.subheader(f"🎯 فرصة قيمة: {side.capitalize()} {selected_line}")
+                                    c1, c2, c3 = st.columns(3)
+                                    c1.metric("أفضل سعر", f"{agg_odds_ou.get(side, 0):.2f}")
+                                    c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
+                                    c3.metric("الرهان المقترح", f"${suggestion['stake_amount']:.2f}")
+                else:
+                    st.warning("لا توجد أسعار كافية لتحليل هذا الخط.")
+
+        with tab4:
+            if st.button("اطلب تحليلاً مفصلاً من رئيس المجلس 🧠"):
+                if not gemini_api_key:
+                    st.error("أدخل مفتاح Gemini API أولاً.")
+                else:
+                    with st.spinner("الخبير الاستراتيجي يفكر..."):
+                        payload = {
+                            "match": {"home": home_team_name, "away": away_team_name},
+                            "market_analysis": {"verdict": verdicts["market"], "fair_probs": fair_h2h},
+                            "poisson_analysis": {"verdict": verdicts["poisson"], "probs": poisson_probs},
+                            "form_analysis": {"verdict": verdicts["form"], "probs": form_probs},
+                            "xg_analysis": {"verdict": verdicts["xg"], "probs": xg_probs}
+                        }
+                        try:
+                            analysis = analyze_with_gemini(payload=payload)
+                            st.markdown(analysis)
+                        except Exception as e:
+                            st.error(f"حدث خطأ من Gemini: {e}")
