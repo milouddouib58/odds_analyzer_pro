@@ -9,7 +9,7 @@ try:
     from odds_math import *
     from gemini_helper import *
     import odds_provider_theoddsapi as odds_api
-    from stats_fetcher import get_league_stats_from_api, _normalize_team_name 
+    from stats_fetcher import get_league_stats_from_api, find_team_stats
 except ImportError as e:
     st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
     st.stop()
@@ -100,30 +100,26 @@ if st.button("🚀 جلب وتحليل المباريات"):
                 st.session_state["events_data"] = None
         
         with st.spinner("جاري سحب الإحصائيات من football-data.org..."):
-            league_stats = get_league_stats_from_api(api_key=football_data_key, competition_code="PL") 
-            if league_stats is None:
-                st.error("فشل في سحب الإحصائيات.")
-                st.session_state['league_stats'] = None
+            league_df = get_league_stats_from_api(api_key=football_data_key, competition_code="PL") 
+            if league_df is None:
+                st.error("فشل في سحب جدول الإحصائيات.")
+                st.session_state['league_df'] = None
             else:
-                st.session_state['league_stats'] = league_stats
+                st.session_state['league_df'] = league_df
 
 # --- عرض وتحليل المباريات ---
 if "events_data" in st.session_state and st.session_state["events_data"]:
     events = st.session_state["events_data"]["events"]
-    league_stats = st.session_state.get('league_stats')
+    league_df = st.session_state.get('league_df')
     match_options = {f"{ev.get('home_team')} vs {ev.get('away_team')}": i for i, ev in enumerate(events)}
     
-    if not match_options:
-        st.warning("لم يتم العثور على مباريات لهذه الرياضة/المنطقة.")
-    else:
+    if match_options:
         selected_match_label = st.selectbox("اختر مباراة من القائمة:", list(match_options.keys()))
         event = events[match_options[selected_match_label]]
         
         home_team_name = event['home_team']
         away_team_name = event['away_team']
-        normalized_home = _normalize_team_name(home_team_name)
-        normalized_away = _normalize_team_name(away_team_name)
-
+        
         tab1, tab2, tab3, tab4 = st.tabs(["📊 التحليل المزدوج", "📈 تفاصيل 1x2", "⚽️ تفاصيل الأهداف", "🤖 استشارة Gemini"])
 
         # 1. تحليل السوق
@@ -135,14 +131,14 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
             fair_h2h = shin_fair_probs(imps_h2h)
             sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale)
         
-        # 2. التحليل الإحصائي (بواسون)
+        # 2. التحليل الإحصائي (بواسون) باستخدام البحث الذكي
         poisson_probs = None
-        home_stats_found, away_stats_found = False, False
-        if league_stats:
-            home_stats = league_stats.get(normalized_home)
-            away_stats = league_stats.get(normalized_away)
-            if home_stats: home_stats_found = True
-            if away_stats: away_stats_found = True
+        home_stats, away_stats = None, None
+        
+        if league_df is not None:
+            with st.spinner(f"جاري البحث عن إحصائيات '{home_team_name}' و '{away_team_name}'..."):
+                home_stats = find_team_stats(home_team_name, league_df)
+                away_stats = find_team_stats(away_team_name, league_df)
             
             if home_stats and away_stats:
                 poisson_probs = poisson_prediction(
@@ -150,7 +146,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                     away_attack=away_stats['attack'], away_defense=away_stats['defense']
                 )
 
-        with tab1:
+        with tab1: # التحليل المزدوج
             st.header("مقارنة بين رأي السوق ورأي الإحصاء")
             col1, col2 = st.columns(2)
             with col1:
@@ -167,17 +163,16 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                     st.markdown(render_prob_bar(home_team_name, poisson_probs.get('home', 0), '#4a90e2'), unsafe_allow_html=True)
                     st.markdown(render_prob_bar("التعادل", poisson_probs.get('draw', 0), '#f5a623'), unsafe_allow_html=True)
                     st.markdown(render_prob_bar(away_team_name, poisson_probs.get('away', 0), '#e24a4a'), unsafe_allow_html=True)
+                    st.caption(f"تم العثور على: '{home_stats['found_name']}' و '{away_stats['found_name']}'")
                 else:
-                    st.warning("تحليل بواسون غير متوفر. تحقق من الأسباب التالية:")
-                    if not league_stats:
+                    st.warning("تحليل بواسون غير متوفر.")
+                    if league_df is None:
                         st.error("- فشل تحميل بيانات الإحصائيات.")
                     else:
-                        if not home_stats_found:
-                            st.error(f"- لم يتم العثور على إحصائيات للفريق: '{home_team_name}' (بحثنا عن '{normalized_home}')")
-                        if not away_stats_found:
-                            st.error(f"- لم يتم العثور على إحصائيات للفريق: '{away_team_name}' (بحثنا عن '{normalized_away}')")
+                        if not home_stats: st.error(f"- لم يتم العثور على إحصائيات مطابقة للفريق: '{home_team_name}'")
+                        if not away_stats: st.error(f"- لم يتم العثور على إحصائيات مطابقة للفريق: '{away_team_name}'")
 
-        with tab2:
+        with tab2: # تفاصيل 1x2
             st.header("تحليل سوق نتيجة المباراة (1x2)")
             if not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
                 st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق حسب المعايير الحالية.")
@@ -191,7 +186,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                             c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
                             c3.metric("الرهان المقترح (كيلي)", f"${suggestion['stake_amount']:.2f}")
 
-        with tab3:
+        with tab3: # تفاصيل الأهداف
             st.header("تحليل سوق الأهداف (Over/Under)")
             totals_lines = odds_api.extract_totals_lines(event)
             if not totals_lines:
@@ -219,7 +214,7 @@ if "events_data" in st.session_state and st.session_state["events_data"]:
                 else:
                     st.warning("لا توجد أسعار كافية لتحليل هذا الخط.")
 
-        with tab4:
+        with tab4: # استشارة Gemini
             st.header("اطلب استشارة من 'الاستراتيجي'")
             if st.button("حلل يا استراتيجي 🧠"):
                 if not gemini_api_key:
