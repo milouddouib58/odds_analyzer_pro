@@ -1,75 +1,70 @@
-# data_loader.py (النسخة المصححة مع ترجمة الأعمدة)
+# data_loader.py (النسخة النهائية مع قاموس الترجمة)
 import pandas as pd
 import requests
 import os
 
-# قاموس يحتوي على روابط التحميل المباشرة لكل دوري
-LEAGUE_CSV_URLS = {
-    "E0.csv": "https://www.football-data.co.uk/mmz4281/2425/E0.csv", # Premier League
-    "SP1.csv": "https://www.football-data.co.uk/mmz4281/2425/SP1.csv", # La Liga
-    "I1.csv": "https://www.football-data.co.uk/mmz4281/2425/I1.csv", # Serie A
-    "D1.csv": "https://www.football-data.co.uk/mmz4281/2425/D1.csv", # Bundesliga
-    "F1.csv": "https://www.football-data.co.uk/mmz4281/2425/F1.csv", # Ligue 1
+# --- ::: قاموس الترجمة الذكي ::: ---
+# هذا هو الجزء الأهم لحل المشكلة بشكل نهائي.
+# المفتاح: هو اسم الفريق كما يأتي من The Odds API (بحروف صغيرة).
+# القيمة: هو اسم الفريق كما هو مكتوب بالضبط في ملف CSV.
+TEAM_NAME_MAP = {
+    # La Liga (SP1.csv)
+    "sevilla": "Sevilla",
+    "elche cf": "Elche",
+    "real betis": "Betis",
+    "celta de vigo": "Celta",
+    "cádiz cf": "Cadiz",
+    "atlético madrid": "Atletico Madrid",
+    "real sociedad": "Sociedad",
+    "fc barcelona": "Barcelona",
+    "real valladolid": "Valladolid",
+    "deportivo alavés": "Alaves",
+    
+    # Premier League (E0.csv) - كمثال
+    "manchester united": "Man United",
+    "manchester city": "Man City",
+    "wolverhampton wanderers": "Wolves",
+    "nottingham forest": "Nott'm Forest",
+    "brighton and hove albion": "Brighton",
+    "west ham united": "West Ham",
+    "newcastle united": "Newcastle",
+    "tottenham hotspur": "Tottenham",
 }
+
+def get_csv_name(odds_api_name: str) -> str:
+    """
+    يترجم اسم الفريق من مصدر الأسعار إلى الاسم الموجود في ملف CSV.
+    """
+    normalized_name = odds_api_name.lower().strip()
+    return TEAM_NAME_MAP.get(normalized_name, odds_api_name) # يرجع الاسم الأصلي إذا لم يجد ترجمة
 
 def load_stats_data_from_csv(filepath: str):
     """
-    يقوم بتحميل بيانات الإحصائيات من ملف CSV.
-    إذا لم يكن الملف موجودًا، يقوم بتحميله تلقائيًا.
-    ويقوم بإعادة تسمية الأعمدة لتكون متوافقة.
+    يقوم بتحميل بيانات الإحصائيات من ملف CSV ويقوم بإعادة تسمية الأعمدة.
     """
     if not os.path.exists(filepath):
-        print(f"⚠️ الملف '{filepath}' غير موجود. جاري محاولة تحميله تلقائيًا...")
-        filename = os.path.basename(filepath)
-        url = LEAGUE_CSV_URLS.get(filename)
-        if not url:
-            print(f"❌ لا يوجد رابط تحميل معروف للملف '{filename}'.")
-            return None
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            with open(filepath, 'wb') as f:
-                f.write(response.content)
-            print(f"✅ تم تحميل '{filepath}' بنجاح.")
-        except requests.exceptions.RequestException as e:
-            print(f"❌ فشل تحميل الملف من الرابط: {e}")
-            return None
-
-    try:
-        # --- ::: التعديل الأهم يبدأ هنا ::: ---
+        st.error(f"الملف '{filepath}' غير موجود. الرجاء تحميله ووضعه في المجلد.")
+        return None
         
-        # 1. تحميل الملف
-        df = pd.read_csv(filepath, encoding='ISO-8859-1', on_bad_lines='skip')
-
-        # 2. قاموس الترجمة لأسماء الأعمدة
+    try:
+        df = pd.read_csv(filepath, encoding='ISO-8851', on_bad_lines='skip')
+        
         rename_map = {
-            'FTHG': 'HomeGoals',
-            'FTAG': 'AwayGoals',
-            'FTR': 'Result',
-            'HS': 'HomeShots',
-            'AS': 'AwayShots',
-            'HST': 'HomeShotsTarget',
-            'AST': 'AwayShotsTarget',
-            'xG': 'Home_xG',
-            'xG.1': 'Away_xG',
-            'xGA': 'Away_xG_for_Home',
-            'xGA.1': 'Home_xG_for_Away'
+            'FTHG': 'HomeGoals', 'FTAG': 'AwayGoals', 'FTR': 'Result',
+            'HS': 'HomeShots', 'AS': 'AwayShots', 'HST': 'HomeShotsTarget', 'AST': 'AwayShotsTarget',
+            'xG': 'Home_xG', 'xGA': 'Away_xG_for_Home',
+            'xG.1': 'Away_xG', 'xGA.1': 'Home_xG_for_Away'
         }
         
-        # 3. إعادة تسمية الأعمدة الموجودة فقط
-        df.rename(columns=lambda c: rename_map.get(c, c), inplace=True)
+        df.rename(columns=rename_map, inplace=True)
         
-        # التأكد من وجود الأعمدة الأساسية بعد إعادة التسمية
         required_cols = ['Date', 'HomeTeam', 'AwayTeam', 'HomeGoals', 'AwayGoals']
         if not all(col in df.columns for col in required_cols):
-            print("❌ الأعمدة الأساسية (HomeGoals, AwayGoals, etc.) غير موجودة في ملف CSV.")
+            print(f"الأعمدة المطلوبة غير موجودة. الأعمدة المتوفرة: {df.columns.tolist()}")
             return None
 
         df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        print("✅ تم تحميل وترجمة أعمدة ملف الإحصائيات بنجاح.")
         return df
-        # --- ::: نهاية التعديل ::: ---
-        
     except Exception as e:
-        print(f"Error loading stats CSV: {e}")
+        print(f"حدث خطأ أثناء قراءة ملف CSV: {e}")
         return None
