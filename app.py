@@ -270,17 +270,17 @@ def build_feature_row_from_values(last_values: list) -> dict:
 def get_base_models(use_xgb=True, use_lgbm=True):
     models = OrderedDict()
     models['RF'] = RandomForestClassifier(
-        n_estimators=800, max_features='sqrt',
+        n_estimators=300, max_features='sqrt',
         min_samples_split=10, min_samples_leaf=4,
         class_weight='balanced', random_state=RANDOM_STATE, n_jobs=-1
     )
     models['ET'] = ExtraTreesClassifier(
-        n_estimators=1000, max_features='sqrt',
+        n_estimators=250, max_features='sqrt',
         min_samples_split=5, min_samples_leaf=2,
         class_weight='balanced', random_state=RANDOM_STATE, n_jobs=-1
     )
     models['GB'] = GradientBoostingClassifier(
-        learning_rate=0.05, n_estimators=400, max_depth=3, random_state=RANDOM_STATE
+        learning_rate=0.05, n_estimators=250, max_depth=3, random_state=RANDOM_STATE
     )
     models['HGB'] = HistGradientBoostingClassifier(
         learning_rate=0.05, max_depth=None, max_iter=400, random_state=RANDOM_STATE
@@ -299,13 +299,13 @@ def get_base_models(use_xgb=True, use_lgbm=True):
     ])
     if use_xgb and HAS_XGB:
         models['XGB'] = XGBClassifier(
-            n_estimators=600, learning_rate=0.05, max_depth=4,
+            n_estimators=300, learning_rate=0.05, max_depth=4,
             subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
             random_state=RANDOM_STATE, n_jobs=-1, eval_metric='logloss', tree_method='hist'
         )
     if use_lgbm and HAS_LGBM:
         models['LGBM'] = LGBMClassifier(
-            n_estimators=700, learning_rate=0.05, num_leaves=31,
+            n_estimators=350, learning_rate=0.05, num_leaves=31,
             subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE, n_jobs=-1
         )
     return models
@@ -602,3 +602,4 @@ with tab_models:
 
 st.markdown("---")
 st.info("ملاحظة: حتى مع التعقيد المرتفع، قد تكون السلسلة عشوائية حقًا. استخدم مرشح الثقة والعتبة القائمة على Precision لتفادي الإشارات المتحيزة.", icon="ℹ️")
+
