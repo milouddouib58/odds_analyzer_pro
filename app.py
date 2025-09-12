@@ -1,252 +1,194 @@
-# app.py
 # -*- coding: utf-8 -*-
-import os
 import streamlit as st
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import roc_curve
+import warnings
 
-# --- استيراد الدوال ---
-try:
-    from odds_math import (
-        poisson_prediction,
-        aggregate_prices,
-        implied_from_decimal,
-        shin_fair_probs,
-        kelly_suggestions,
-    )
-    from gemini_helper import analyze_with_gemini
-    import odds_provider_theoddsapi as odds_api
-except ImportError as e:
-    st.error(f"خطأ في الاستيراد: {e}. تأكد من وجود كل الملفات المساعدة!")
-    st.stop()
+# تجاهل التحذيرات لتحسين شكل المخرجات
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
 
-# --- إعدادات الصفحة والـ CSS ---
-st.set_page_config(page_title="Odds Strategist PRO", page_icon="🧠", layout="wide")
-st.markdown(
-    """
-    <style>
-    .prob-bar-container{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
-    .prob-bar-title{display:flex;justify-content:space-between;font-size:.9em;color:#b0b8c2}
-    .prob-bar{width:100%;background-color:#334155;border-radius:5px;overflow:hidden;height:15px}
-    .prob-bar-fill{height:100%;border-radius:5px;transition:width .5s ease-in-out;text-align:center;color:#fff;font-size:.8em;font-weight:700;line-height:15px}
-    </style>
-    """,
-    unsafe_allow_html=True,
+# --- الإعدادات الأساسية للصفحة ---
+st.set_page_config(
+    page_title="أداة التنبؤ بالجولات",
+    page_icon="🔮",
+    layout="wide"
 )
 
-def render_prob_bar(label, probability, color):
-    p = 0.0 if probability is None else float(probability)
-    p = max(0.0, min(1.0, p))  # clamp 0..1
-    pct = p * 100.0
-    return f"""
-    <div class="prob-bar-container">
-      <div class="prob-bar-title"><span>{label}</span><span>{pct:.1f}%</span></div>
-      <div class="prob-bar"><div class="prob-bar-fill" style="width:{pct}%;background-color:{color};"></div></div>
-    </div>
+# ==============================================================================
+# الجزء الأول: دوال التدريب وهندسة السمات
+# ==============================================================================
+
+def _streak_series(binary_series: pd.Series) -> pd.Series:
+    """دالة مساعدة لحساب السلاسل المتتالية."""
+    groups = (binary_series != binary_series.shift()).cumsum()
+    streak = binary_series.groupby(groups).cumcount() + 1
+    return streak * binary_series
+
+# هذا الديكور هو "العقل" الذي يمنع إعادة تدريب النموذج مع كل ضغطة زر
+# يقوم بتخزين النموذج في الذاكرة بعد أول تشغيل
+@st.cache_resource
+def train_and_prepare():
     """
+    دالة شاملة تقوم بتجهيز البيانات وتدريب النموذج وإرجاع حزمة متكاملة.
+    تعمل هذه الدالة مرة واحدة فقط عند بدء تشغيل التطبيق.
+    """
+    st.toast("⏳ بدأ تدريب النموذج لمرة واحدة...")
+    
+    # --- البيانات الأولية الكاملة ---
+    raw_data = [
+        8.72, 6.75, 1.86, 2.18, 1.25, 2.28, 1.24, 1.2, 1.54, 24.46, 4.16, 1.49, 1.09, 1.47, 1.54, 1.53, 2.1, 32.04, 11, 1.17, 1.7, 2.61, 1.26, 22.23, 1.77, 1.93, 3.35, 7.01, 1.83, 9.39, 3.31, 2.04, 1.3, 6.65, 1.16, 3.39, 1.95, 10.85, 1.65, 1.22, 1.6, 4.67, 1.85, 2.72, 1, 3.02, 1.35, 1.3, 1.37, 17.54, 1.18, 1, 14.4, 1.11, 6.15, 2.39, 2.22, 1.42, 1.23, 2.42, 1.07, 1.24, 2.55, 7.26, 1.69, 5.1, 2.59, 5.51, 2.31, 2.12, 1.97, 1.5, 3.01, 2.29, 1.36, 4.95, 5.09, 8.5, 1.77, 5.52, 3.93, 1.5, 2.28, 2.49, 18.25, 1.68, 1.42, 2.12, 4.17, 1.04, 2.35, 1, 1.01, 5.46, 1.13, 2.84, 3.39, 2.79, 1.59, 1.53, 4.34, 2.96, 1.06, 1.72, 2.16, 2.2, 3.61, 2.34, 4.49, 1.72, 1.78, 9.27, 8.49, 2.86, 1.66, 4.63, 9.25, 1.35, 1, 1.64, 1.86, 2.81, 2.44, 1.74, 1.1, 1.29, 1.45, 8.92, 1.24, 6.39, 1.16, 1.19, 2.4, 4.64, 3.17, 24.21, 1.17, 1.42, 2.13, 1.12, 3.78, 1.12, 1.52, 22.81, 1.31, 1.9, 1.38, 1.47, 2.86, 1.79, 1.49, 1.38, 1.84, 1.06, 3.3, 5.97, 1, 2.92, 1.64, 5.32, 3.26, 1.78, 2.24, 3.16, 1.6, 1.08, 1.55, 1.07, 1.02, 1.23, 1.08, 5.22, 3.32, 24.86, 3.37, 5.16, 1.69, 2.31, 1.07, 1.1, 1.01, 1.36, 1.38, 1.54, 5.34, 2.68, 5.78, 3.63, 1.89, 8.41, 4.06, 1.44, 1.5, 3.17, 1.02, 1.8, 1.9, 1.86, 1.85, 1.73, 3.86, 3.11, 2.44, 1.15, 2.03, 1.05, 3.05, 1.88, 10.13, 2.29, 1.41, 1, 5.46, 1.26, 23.33, 1.96, 1.03, 4.54, 1.37, 3.5, 1.13, 1.16, 1.43, 1.13, 1.05, 33.27, 9.96, 1.79, 2.07, 18.51, 5.75, 1.15, 1.08, 5.92, 1.38, 1.61, 12.99, 24.72, 4.86, 1.11, 2.86, 1.54, 3.71, 4, 7.57, 2.03, 2.18, 5.52, 13.37, 3.73, 2.41, 1.79, 5.57, 4.36, 12.33, 1.61, 3.28, 2.89, 1.47, 1.08, 26.89, 1.53, 2.94, 5.29, 1.23, 1.57, 1.12, 5.69, 3.29, 2.72, 1.18, 5.03, 1.1, 1.32, 1.18, 1.07, 1.27, 4.6, 11.68, 1.74, 3.94, 3.63, 1.05, 1.61, 1.62, 2.41, 6.9, 2.02, 1.01, 3.22, 17.21, 1.95, 8.8, 1.44, 2.76, 3.1, 2.84, 1.35, 1.84, 1.6, 10.72, 1.17, 3.47, 1.45, 1.29, 1.46, 2.23, 12.3, 3.27, 1.23, 1.02, 1.66, 3.79, 2.06, 4.55, 7.95, 8.55, 4.08, 2.02, 1.21, 1.19, 1.53, 4.9, 1.84, 10.51, 1.01, 1.34, 1.5, 1.4, 1.42, 4.18, 7.99, 1.23, 1.67, 3.16, 1.64, 25.06, 4.52, 1.5, 3.23, 1.09, 1.45, 2.77, 7.42, 7.48, 1.89, 2.11, 4.1, 1.26, 2.29, 10.12, 1.35, 13.21, 2.36, 22.35, 1.76, 2.22, 1.04, 1.18, 3.69, 1.47, 10.2, 1.47, 1.68, 2.45, 1.03, 2.04, 1.47, 1.18, 1.72, 1, 3.25, 1.1, 8.74, 1.01, 1.54, 1.34, 5.22, 5.31, 4.47, 2.78, 21.37, 3.38, 1.63, 2.21, 2.35, 2.14, 1.46, 1.25, 1.67, 1.08, 3.94, 1.66, 31.1, 1.73, 2.18, 2.06, 1.08, 1.11, 1, 1.07, 1.31, 1.55, 1.98, 1.75, 1.23, 1.32, 2.56, 3.21, 1.81, 2.09, 1.34, 3.42, 1.29, 1.36, 1.76, 1.61, 4.52, 1.08, 1.97, 3.75, 1.8, 6.36, 1.14, 1.72, 2.39, 1.28, 4.22, 2.12, 1.28, 1.38, 1.42, 28.26, 2.15, 1.31, 1.65, 2.43, 2.76, 1.54, 1.61, 11.91, 2.93, 8.1, 2.04, 1.84, 1.26, 3.69, 3.97, 3.01, 3.16, 1.3, 7.9, 1.72, 5.57, 2.42, 1.74, 2.06, 2.86, 1.56, 1.4, 2.35, 2.82, 4.03, 1.28, 2.21, 1.1, 2.06, 1.14, 1.58, 27.78, 2.04, 1.52, 1.22, 1.4, 1.29, 1.16, 11.72, 1.33, 1.3, 4.34, 1.02, 1.63, 1.9, 9, 1.42, 3.13, 3.8, 1.02, 1.25, 2.45, 1.74, 1.06, 1.38, 3.46, 1.08, 1, 1.02, 1.84, 1, 1.77, 3.07, 5.26, 1.73, 1.07, 3.75, 2.32, 1.6, 1.22, 1.72, 2.01, 1.11, 2.03, 1.17, 1.98, 2.18, 34.49, 1.2, 10.3, 3.4, 2.58, 2.2, 3.16, 29.22, 4.26, 3.18, 3.29, 1.09, 2.3, 1.25, 3.05, 2.99, 2.16, 3.02, 2.21, 1.59, 5.74, 1.02, 1.12, 1.21, 2.25, 4.38, 1.05, 1.05, 1.9, 23.03, 4.93, 1.03, 16.7, 4.08, 1.68, 2.4, 2.89, 2.85, 2.75, 20.29, 3.57, 9.68, 1.46, 5.73, 4.84, 1.15, 1.92, 3.71, 3.41, 22.67, 15.65, 1.86, 3.41, 1.89, 1.01, 3.02, 13.81, 1.55, 1.16, 6.35, 5.6, 2.55, 16.8, 5.48, 1.49, 2.07, 1.05, 1.49, 6.29, 1.32, 23.22, 1.07, 1.65, 20.07, 1.14, 1.1, 18.38, 4.34, 3.8, 6.17, 2.27, 1.69, 1.07, 3.74, 1.6, 1.02, 1.45, 1.86, 5.13, 1.57, 6.93, 15.82, 1, 1.16, 4.14, 1.08, 2.35, 2.15, 13.52, 10.87, 9.85, 1.97, 1, 3.46, 1.31, 3.28, 2.74, 1.98, 2.22, 1, 9.95, 1.41, 1.43, 2.13, 4.6, 2.68, 4.13, 1.61, 1.46, 1.23, 9.57, 1.14, 1.17, 14.27, 4.01, 5.55, 1.95, 2.48, 1.78, 2.21, 1.65, 1.08, 2.63, 8.53, 2.2, 1.33, 21.72, 1.3, 1.43, 6.37, 1.09, 3.94, 1.88, 3.38, 1.66, 1.41, 22.99, 1.55, 7.5, 25.48, 2.21, 3.62, 1.68, 9.92, 3.4, 2.66, 1.03, 4.63, 1.89, 1.77, 1.9, 1.01, 1.81, 32.39, 2.1, 1.23, 6.26, 9.06, 1.17, 2.41, 2.52, 1.63, 5.61, 1, 2.63, 1.88, 1.5, 23.8, 5.65, 1.05, 1.07, 2.05, 1.7, 2.4, 18.27, 3.68, 13.17, 4.99, 20.81, 1.51, 6.33, 9.85, 10.15, 17.05, 27.6, 4.65, 3.18, 2.54, 3.92, 4.74, 1.81, 1.91, 4.42, 1.57, 2.17, 1.25, 1.03, 1.15, 1.19, 13.97, 2.39, 1.34, 2.52, 1.47, 2.91, 2.31, 1.29, 1.61, 4.13, 1.83, 2.96, 1.08, 1.28, 13.53, 1.15, 1.51, 1.31, 3.45, 9.32, 5.42, 3.27, 2.56, 2.07, 1.83, 14.1, 15.36, 1.93, 1.47, 16.96, 1.61, 2.38, 2.66, 1.28, 1.46, 3.09, 6.73, 1.12, 1.85, 3.21, 1.15, 3.71, 1.64, 4.88, 11.09, 3.82, 2.49, 21.23, 2.01, 2.47, 2.47, 2.19, 2.14, 1, 2.09, 1.03, 5.22, 1.65, 1.13, 14.43, 1.68, 1.86, 1.21, 1.14, 1.47, 1.26, 3.44, 23.9, 2.53, 2.72, 1, 1.13, 3.34, 1.43, 1, 2.48, 2.01, 2.22, 6.43, 1.81, 2.12, 1.3, 4.02, 1.79, 3.9, 1.3, 5.04, 1.77, 6.67, 2.21, 1.58, 5.38, 2.79, 6.12, 2.95, 1.14, 1.19, 1.19, 10.23, 17.96, 10.1, 2.4, 9.29, 1.28, 4.07, 1.64, 2.1, 2.67, 1.08, 16.82, 2.83, 24.42, 1.01, 3.24, 5.05, 3.24, 1.56, 2.32, 1.23, 1.72, 3.39, 1.96, 1.18, 3.21, 23.95, 9.46, 23.12, 1.45, 3.22, 5, 2.04, 2.73, 6.28, 1.21, 14.3, 1.48, 3.3, 3.73, 4.09, 2.88, 8.83, 1.15, 4.58, 4.23, 2.34, 2, 11.38, 1.81, 1.03, 1.76, 2.41, 2.5, 5.82, 2.18, 10.19, 2.08, 18.19, 4.22, 7.78, 1.96, 1.43, 1.08, 2.38, 1.37, 1.21, 4.48, 1.64, 1.62, 21.24, 1.22, 7.99, 1.13, 1.29, 2.36, 3.94, 1.08, 1.41, 1.97, 1.41, 1.95, 1.28, 4.56, 3.35, 1.37, 1.18, 1.03, 3.67, 1.43, 1.8, 2.48, 11.95, 1.5, 3.52, 2.03, 1, 1.1, 10.13, 1.44, 14.19, 2.1, 8.46, 1.06, 1.66, 1.2, 7.22, 1.75, 1.78, 3.76, 2.21, 1, 25.19, 5.96, 5.42, 2.67, 1.37, 1.39, 15.95, 2.8, 1.76, 1.7, 2.81, 8.87, 1.48, 1.03, 1.14, 1.05, 10.29, 1.71, 23.98, 2.34, 1.97, 1.33, 24.02, 2.01, 13.74, 2.5, 1.33, 1.02, 1.76, 1.37, 8.97, 1.27, 1.38, 4.47, 1.38, 3.02, 17, 13.35, 1.07, 1.38, 5.74, 6.68, 24.72, 1.47, 1.25, 4.51, 4.47, 1.99, 1.15, 4.03, 1.17, 3.42, 6.46, 1.31, 1.46, 6.67, 3.79, 1.56, 3.98, 1.62, 2.13, 1.07, 4.88, 1.62, 1.5, 6.11, 1.31, 1.85, 1.93, 1.09, 1.49, 1.41, 1.24, 1.05, 6.99, 1.33, 1.73, 10.76, 21.77, 1.18, 1.06, 5.36, 1.45, 1.16, 6.43, 2.1, 4.15, 1.14, 2.21, 33.48, 2.88, 1, 4.7, 1.27, 5.75, 4.97, 1.11, 3.51, 21.47, 1.21, 1.98, 1.11, 1.46, 1.77, 1.22, 2.65, 1.66, 5.29, 1.58, 2.03, 5.86, 1.1, 1.68, 1.35, 1.72, 1.15, 2.69, 2.81, 3.46, 1.58, 1.07, 7.18, 2.35, 6.05, 1.24, 5.69, 5.46, 1, 3.04, 4.76, 1.56, 1.41, 2.43, 7.97, 1.22, 1.94, 1.51, 21.71, 3.03, 1.43, 5.07, 1.87, 1.12, 1, 1.32, 1, 1.08, 1.1, 1.04, 1, 1.09, 1.97, 2.97, 1.21, 1.61, 5.94, 2.55, 4.48, 1.14, 2.73, 1.34, 1.33, 1.29, 1.25, 5.44, 1.77, 2.18, 2.52, 1.28, 22.25, 1.04, 3.57, 6.53, 1.34, 5.75, 1.61, 3.89, 1.07, 2.13, 5.05, 1.53, 3.53, 8.31, 2.15, 1.39, 1.23, 1.68, 17.14, 1.23, 2.38, 1, 2.02, 19.48, 1.22, 1.42, 6.26, 16.11, 2.05, 3.51, 3.53, 1.83, 6.86, 1.24, 27.78, 2.33, 3.43, 2.92, 1.26, 15.11, 24.58, 1.12, 2.46, 5.61, 9.79, 2.33, 1.34, 7.86, 1.1, 2.61, 2.34, 4.5, 1.79, 1.75, 18, 8.66, 1.92, 11.5, 1.35, 2.53, 1.79, 1.14, 1.58, 1.84, 1.35, 6.44, 4.49, 3.02, 3.16, 1.12, 1.42, 9.14, 1.26, 1.19, 2.47, 1.2, 3.88, 1.03, 1.85, 1.07, 1.03, 1.13, 4.87, 1.03, 1.8, 1.29, 6.11, 1.73, 30.16, 2.99, 2.34, 1.56, 4.33, 1.23, 7.39, 1.57, 3.16, 2.73, 1.46, 1.01, 8.24, 1.61, 2.28, 1.91, 1.49, 5.12, 3.53, 20.05, 3.26, 2.25, 6.61, 1.35, 4.32, 1, 2.13, 1.83, 1.26, 2.27, 1.21, 1.64, 1.77, 1.06, 1.05, 1.98, 3.1, 3.74, 22.09, 2.17, 2.97, 1.26, 1.83, 4.44, 1.08, 2.22, 1.24, 1.7, 20.14, 16.56, 1.72, 1.37, 1.06, 1.65, 2.42, 3.84, 1, 1.56, 1.93, 1.03, 1.47, 1.76, 12.64, 1.12, 1.32, 1.89, 1.64, 1.2, 3.15, 1.88, 1.12, 1.01, 1.45, 1.71, 1.65, 1.65, 5.16, 1.48, 1.73
+    ]
+    
+    # --- 1. تجهيز البيانات ---
+    s = pd.Series(raw_data, name="crash")
+    df = pd.DataFrame(s)
+    df['is_low'] = (df['crash'] < 2.0).astype(int)
+    df['is_high'] = (df['crash'] >= 2.0).astype(int)
+    df['low_streak'] = _streak_series(df['is_low'])
+    df['high_streak'] = _streak_series(df['is_high'])
+    x = df['crash'].shift(1)
+    feats = pd.DataFrame(index=df.index)
+    feats['previous_crash'] = x
+    for w in [3, 5, 10]:
+        feats[f'avg_last_{w}'] = x.rolling(window=w).mean()
+        feats[f'std_last_{w}'] = x.rolling(window=w).std(ddof=1)
+    feats['min_last_5'] = x.rolling(5).min()
+    feats['max_last_5'] = x.rolling(5).max()
+    feats['ema_5'] = x.ewm(span=5, adjust=False).mean()
+    feats['low_streak'] = df['low_streak'].shift(1)
+    feats['high_streak'] = df['high_streak'].shift(1)
+    feats['low_ratio_last_10'] = df['is_low'].shift(1).rolling(10).mean()
+    feats['delta_prev_vs_avg5'] = feats['previous_crash'] - feats['avg_last_5']
+    feats['vol_ratio_5_10'] = feats['std_last_5'] / (feats['std_last_10'] + 1e-6)
+    feats['target'] = (df['crash'] >= 2.0).astype(int)
+    feats.dropna(inplace=True)
+    feats.reset_index(drop=True, inplace=True)
+    
+    # --- 2. تدريب النموذج ---
+    X = feats.drop('target', axis=1)
+    y = feats['target'].values
+    
+    final_model = RandomForestClassifier(
+        n_estimators=800, max_features='sqrt',
+        min_samples_split=10, min_samples_leaf=4,
+        class_weight='balanced', random_state=42, n_jobs=-1
+    )
+    final_model.fit(X, y)
+    
+    # --- 3. تحديد العتبة المثلى ---
+    cv_oof = TimeSeriesSplit(n_splits=5)
+    oof_proba = np.full(len(X), np.nan, dtype=float)
+    for tr_idx, val_idx in cv_oof.split(X):
+        model_fold = RandomForestClassifier(**final_model.get_params())
+        model_fold.fit(X.iloc[tr_idx], y[tr_idx])
+        oof_proba[val_idx] = model_fold.predict_proba(X.iloc[val_idx])[:, 1]
+    
+    mask = ~np.isnan(oof_proba)
+    fpr, tpr, roc_thresholds = roc_curve(y[mask], oof_proba[mask])
+    optimal_threshold = float(roc_thresholds[np.argmax(tpr - fpr)])
 
-# --- عناوين ---
-st.markdown("<h1>Odds Strategist PRO 🧠</h1>", unsafe_allow_html=True)
-st.markdown("### التحليل المزدوج: استراتيجيات السوق + التوقعات الإحصائية (بواسون)")
+    bundle = {
+        'model': final_model,
+        'threshold': optimal_threshold,
+        'feature_columns': list(X.columns)
+    }
+    st.toast("✅ اكتمل تدريب النموذج!", icon="🎉")
+    return bundle
 
-# --- كاش للطلبات ---
-@st.cache_data(ttl=300)
-def cached_list_sports():
-    return odds_api.list_sports()
+def build_feature_row_from_values(last_values: list) -> dict:
+    """
+    يبني سطر سمات واحد من قائمة القيم الماضية.
+    """
+    last3 = last_values[-3:]
+    last5 = last_values[-5:]
+    last10 = last_values[-10:]
+    
+    # حساب السلاسل
+    is_low_series = pd.Series([1 if v < 2.0 else 0 for v in last_values])
+    low_streak = float(_streak_series(is_low_series).iloc[-1])
+    is_high_series = pd.Series([1 if v >= 2.0 else 0 for v in last_values])
+    high_streak = float(_streak_series(is_high_series).iloc[-1])
 
-@st.cache_data(ttl=90)
-def cached_fetch_odds_for_sport(sport_key: str, regions: str, markets: str):
-    return odds_api.fetch_odds_for_sport(sport_key, regions, markets)
+    # حساب المتوسطات والانحرافات
+    avg_last_5 = np.mean(last5)
+    std_last_5 = np.std(last5, ddof=1)
+    std_last_10 = np.std(last10, ddof=1)
+    
+    return {
+        'previous_crash': float(last_values[-1]),
+        'avg_last_3': float(np.mean(last3)),
+        'std_last_3': float(np.std(last3, ddof=1)),
+        'avg_last_5': avg_last_5,
+        'std_last_5': std_last_5,
+        'avg_last_10': float(np.mean(last10)),
+        'std_last_10': std_last_10,
+        'min_last_5': float(np.min(last5)),
+        'max_last_5': float(np.max(last5)),
+        'ema_5': float(pd.Series(last_values).ewm(span=5, adjust=False).mean().iloc[-1]),
+        'low_streak': low_streak,
+        'high_streak': high_streak,
+        'low_ratio_last_10': float(np.mean(np.array(last10) < 2.0)),
+        'delta_prev_vs_avg5': float(last_values[-1] - avg_last_5),
+        'vol_ratio_5_10': float(std_last_5 / (std_last_10 + 1e-6))
+    }
 
-# --- الشريط الجانبي ---
-def load_api_keys():
-    st.sidebar.header("🔑 إعدادات المفاتيح")
-    odds_key, gemini_key = None, None
-    if 'ODDS_API_KEY' in st.secrets:
-        odds_key = st.secrets['ODDS_API_KEY']
-        st.sidebar.success("✅ تم تحميل مفتاح The Odds API.")
-    else:
-        odds_key = st.sidebar.text_input("The Odds API Key", type="password")
-    if 'GEMINI_API_KEY' in st.secrets:
-        gemini_key = st.secrets['GEMINI_API_KEY']
-        st.sidebar.success("✅ تم تحميل مفتاح Gemini API.")
-    else:
-        gemini_key = st.sidebar.text_input("Gemini API Key", type="password")
-    if odds_key:
-        os.environ["ODDS_API_KEY"] = odds_key
-    if gemini_key:
-        os.environ["GEMINI_API_KEY"] = gemini_key
-    return odds_key, gemini_key
+# ==============================================================================
+# الجزء الثاني: واجهة المستخدم التفاعلية
+# ==============================================================================
 
-odds_api_key, gemini_api_key = load_api_keys()
+st.title("🔮 أداة التنبؤ بالجولات")
+st.write("""
+هذه الأداة تستخدم نموذج تعلم آلي لتحليل الأنماط في سجل الجولات السابقة. 
+أدخل **10** قيم على الأقل للحصول على تنبؤ للجولة القادمة.
+""")
 
-st.sidebar.header("🏦 إدارة المحفظة")
-bankroll = st.sidebar.number_input("حجم المحفظة ($)", min_value=1.0, value=100.0, step=10.0)
-kelly_scale = st.sidebar.slider("معامل كيلي (Kelly Scale)", 0.05, 1.0, 0.25, 0.05)
+# --- تحميل النموذج المدرب (سيتم تحميله من الذاكرة بعد أول مرة) ---
+trained_bundle = train_and_prepare()
 
-st.sidebar.header("📊 إحصائيات بواسون (أداء الفرق)")
-st.sidebar.info("أدخل متوسط أداء الفرق لكل مباراة. ملاحظة: قيمة دفاع أعلى تقلل الأهداف المتوقعة على المنافس.")
-home_attack = st.sidebar.number_input("قوة هجوم الفريق المضيف", min_value=0.0, value=1.5, step=0.1)
-home_defense = st.sidebar.number_input("قوة دفاع الفريق المضيف", min_value=0.0, value=1.0, step=0.1)
-away_attack = st.sidebar.number_input("قوة هجوم الفريق الضيف", min_value=0.0, value=1.2, step=0.1)
-away_defense = st.sidebar.number_input("قوة دفاع الفريق الضيف", min_value=0.0, value=1.3, step=0.1)
-home_adv = st.sidebar.slider("أفضلية الملعب (Home Advantage)", min_value=1.00, max_value=1.30, value=1.10, step=0.01)
+# --- حقل إدخال البيانات ---
+user_input = st.text_area(
+    "أدخل الأرقام هنا (كل رقم في سطر جديد أو مفصولة بمسافة):",
+    height=200,
+    placeholder="1.23\n4.56\n1.89\n1.01\n3.34\n5.05\n1.16\n1.98\n2.45\n1.11"
+)
 
-st.sidebar.header("⚙️ إعدادات السوق")
-if not odds_api_key:
-    st.sidebar.warning("الرجاء إدخال مفتاح The Odds API.")
-    st.stop()
-
-try:
-    sports = cached_list_sports()
-    sport_options = {f"{s.get('group')} - {s.get('title')}": s.get("key") for s in sports}
-    selected_sport_label = st.sidebar.selectbox("اختر الرياضة:", list(sport_options.keys()))
-    sport_key = sport_options[selected_sport_label]
-    regions = st.sidebar.multiselect("المناطق:", ["eu", "uk", "us", "au"], default=["eu", "uk"])
-    markets = st.sidebar.multiselect("الأسواق:", ["h2h", "totals"], default=["h2h", "totals"])
-except Exception as e:
-    st.error(f"لا يمكن جلب الرياضات. تأكد من صحة مفتاح The Odds API. الخطأ: {e}")
-    st.stop()
-
-# --- جلب البيانات ---
-if st.button("🚀 جلب وتحليل المباريات"):
-    with st.spinner(f"جاري جلب مباريات {selected_sport_label}..."):
+# --- زر التنبؤ ---
+if st.button("🚀 تنبأ الآن", type="primary"):
+    if user_input:
         try:
-            events, meta = cached_fetch_odds_for_sport(sport_key, ",".join(regions), ",".join(markets))
-            st.session_state["events_data"] = {"events": events, "meta": dict(meta)}
-            st.success(f"تم جلب {len(events)} مباراة.")
-        except Exception as e:
-            st.error(f"حدث خطأ أثناء جلب أسعار المباريات: {e}")
-
-# --- عرض وتحليل المباريات ---
-if "events_data" in st.session_state:
-    events = st.session_state["events_data"]["events"]
-    match_options = {f"{ev.get('home_team')} vs {ev.get('away_team')}": i for i, ev in enumerate(events)}
-
-    if not match_options:
-        st.info("لا توجد مباريات متاحة حالياً لهذه الإعدادات.")
-    else:
-        selected_match_label = st.selectbox("اختر مباراة من القائمة:", list(match_options.keys()))
-        event = events[match_options[selected_match_label]]
-        home_team_name = event['home_team']
-        away_team_name = event['away_team']
-
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 التحليل المزدوج", "📈 تفاصيل 1x2", "⚽️ تفاصيل الأهداف", "🤖 استشارة Gemini"])
-
-        # 1) تحليل السوق H2H (ديناميكي 2-طريق/3-طريق)
-        h2h_prices = odds_api.extract_h2h_prices(event)
-        present_outcomes = [k for k, v in h2h_prices.items() if v]  # outcomes المتاحة فعلاً
-        agg_odds_h2h, fair_h2h, sugg_h2h = {}, {}, {}
-        if present_outcomes:
-            agg_odds_h2h = {s: aggregate_prices(h2h_prices[s], 'best') for s in present_outcomes}
-            fair_h2h = shin_fair_probs(implied_from_decimal(agg_odds_h2h))
-            # اقتراحات كيلي مع سقف حماية
-            sugg_h2h = kelly_suggestions(fair_h2h, agg_odds_h2h, bankroll, kelly_scale, max_fraction=0.25)
-
-        # 2) التحليل الإحصائي (بواسون)
-        poisson_probs = poisson_prediction(home_attack, home_defense, away_attack, away_defense, home_adv=home_adv)
-
-        color_map = {"home": "#4a90e2", "draw": "#f5a623", "away": "#e24a4a"}
-        def side_label(side: str):
-            if side == 'home':
-                return home_team_name
-            if side == 'away':
-                return away_team_name
-            return "التعادل"
-
-        with tab1:
-            st.header("مقارنة بين رأي السوق ورأي الإحصاء")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("تحليل السوق (Fair Odds)")
-                if fair_h2h:
-                    for side in present_outcomes:
-                        st.markdown(
-                            render_prob_bar(side_label(side), fair_h2h.get(side, 0), color_map.get(side, "#888")),
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.info("لا توجد بيانات سوقية لنتيجة المباراة (H2H) لهذه المباراة.")
-            with col2:
-                st.subheader("التحليل الإحصائي (Poisson)")
-                stats_outcomes = ['home', 'draw', 'away'] if 'draw' in present_outcomes else ['home', 'away']
-                for side in stats_outcomes:
-                    st.markdown(
-                        render_prob_bar(side_label(side), poisson_probs.get(side, 0), color_map.get(side, "#888")),
-                        unsafe_allow_html=True,
-                    )
-
-        with tab2:
-            st.header("تفاصيل سوق نتيجة المباراة (1x2)")
-            if not sugg_h2h or not any(s.get('edge', 0) > 0 for s in sugg_h2h.values()):
-                st.info("لا توجد فرص قيمة (Value) واضحة في هذا السوق.")
+            # --- معالجة المدخلات ---
+            crashes = [float(x) for x in user_input.replace('\n', ' ').split()]
+            if len(crashes) < 10:
+                st.error(f"❌ خطأ: الرجاء إدخال 10 أرقام على الأقل. لقد أدخلت {len(crashes)} فقط.", icon="🚨")
             else:
-                for side, suggestion in sugg_h2h.items():
-                    if suggestion.get('edge', 0) > 0:
-                        with st.container():
-                            st.subheader(f"🎯 فرصة قيمة: {side_label(side)}")
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("أفضل سعر", f"{agg_odds_h2h.get(side, 0):.2f}")
-                            c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
-                            c3.metric("الرهان المقترح", f"${suggestion['stake_amount']:.2f}")
+                # --- بناء السمات للتنبؤ ---
+                model = trained_bundle['model']
+                thr = trained_bundle['threshold']
+                feat_cols = trained_bundle['feature_columns']
+                
+                feats_dict = build_feature_row_from_values(crashes)
+                features_df = pd.DataFrame([feats_dict])[feat_cols]
 
-        with tab3:
-            st.header("تفاصيل سوق الأهداف (Over/Under)")
-            totals_lines = odds_api.extract_totals_lines(event)
-            if not totals_lines:
-                st.info("لا توجد بيانات لسوق الأهداف لهذه المباراة.")
-            else:
-                def _is_float(x):
-                    try:
-                        float(x)
-                        return True
-                    except Exception:
-                        return False
-                numeric_keys = sorted([k for k in totals_lines.keys() if _is_float(k)], key=lambda x: float(x))
-                if not numeric_keys:
-                    st.info("لا توجد خطوط صالحة للأهداف.")
+                # --- التنبؤ وعرض النتيجة ---
+                proba_high = float(model.predict_proba(features_df)[0][1])
+                prediction = 1 if proba_high >= thr else 0
+                
+                if prediction == 1:
+                    st.success(f"النتيجة المتوقعة: **مرتفع (>= 2.0x)**", icon="🔼")
                 else:
-                    selected_line = st.selectbox("اختر خط الأهداف:", numeric_keys)
-                    line_data = totals_lines[selected_line]
-                    agg_odds_ou = {
-                        'over': aggregate_prices(line_data.get('over', []), 'best'),
-                        'under': aggregate_prices(line_data.get('under', []), 'best'),
-                    }
-                    if agg_odds_ou.get('over', 0) > 0 and agg_odds_ou.get('under', 0) > 0:
-                        imps_ou = implied_from_decimal(agg_odds_ou)
-                        fair_ou = shin_fair_probs(imps_ou)
-                        sugg_ou = kelly_suggestions(fair_ou, agg_odds_ou, bankroll, kelly_scale, max_fraction=0.25)
+                    st.warning(f"النتيجة المتوقعة: **منخفض (< 2.0x)**", icon="🔽")
 
-                        st.subheader(f"الاحتمالات العادلة لخط {selected_line}")
-                        st.markdown(render_prob_bar(f"Over {selected_line}", fair_ou.get('over', 0), '#22c55e'), unsafe_allow_html=True)
-                        st.markdown(render_prob_bar(f"Under {selected_line}", fair_ou.get('under', 0), '#ef4444'), unsafe_allow_html=True)
+                col1, col2 = st.columns(2)
+                col1.metric("احتمالية الارتفاع", f"{proba_high*100:.2f}%")
+                col2.metric("العتبة المستخدمة لاتخاذ القرار", f"{thr:.3f}")
+                
+        except (ValueError, IndexError):
+            st.error("❌ خطأ: الرجاء التأكد من إدخال أرقام صالحة فقط ومفصولة بشكل صحيح.", icon="🚨")
 
-                        if any(s.get('edge', 0) > 0 for s in sugg_ou.values()):
-                            for side, suggestion in sugg_ou.items():
-                                if suggestion.get('edge', 0) > 0:
-                                    with st.container():
-                                        st.subheader(f"🎯 فرصة قيمة: {side.capitalize()} {selected_line}")
-                                        c1, c2, c3 = st.columns(3)
-                                        c1.metric("أفضل سعر", f"{agg_odds_ou.get(side, 0):.2f}")
-                                        c2.metric("الأفضلية (Edge)", f"+{suggestion['edge']*100:.2f}%")
-                                        c3.metric("الرهان المقترح", f"${suggestion['stake_amount']:.2f}")
-                        else:
-                            st.info("لا توجد فرص قيمة واضحة في هذا الخط.")
-                    else:
-                        st.warning("لا توجد أسعار كافية لتحليل هذا الخط.")
+st.markdown("---")
+st.info("ℹ️ **إخلاء مسؤولية**: هذه الأداة هي مشروع علمي تجريبي لأغراض تعليمية فقط. التنبؤات ليست مضمونة وقد تكون غير دقيقة. لا تستخدم هذه الأداة لاتخاذ قرارات مالية حقيقية.", icon="💡")
 
-        with tab4:
-            st.header("اطلب استشارة من 'الاستراتيجي'")
-            if st.button("حلل يا استراتيجي 🧠"):
-                if not gemini_api_key:
-                    st.error("أدخل مفتاح Gemini API أولاً.")
-                else:
-                    with st.spinner("الاستراتيجي يفكر..."):
-                        payload = {
-                            "match": {"home": home_team_name, "away": away_team_name},
-                            "market_analysis": {"fair_probs": fair_h2h, "kelly_suggestions": sugg_h2h},
-                            "statistical_analysis": {"poisson_probs": poisson_probs}
-                        }
-                        try:
-                            analysis = analyze_with_gemini(payload=payload)
-                            st.markdown(analysis)
-                        except Exception as e:
-                            st.error(f"حدث خطأ من Gemini: {e}")
