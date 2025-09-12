@@ -6,6 +6,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import roc_curve
 import warnings
+import plotly.express as px
 
 # تجاهل التحذيرات لتحسين شكل المخرجات
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -13,8 +14,8 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 
 # --- الإعدادات الأساسية للصفحة ---
 st.set_page_config(
-    page_title="أداة التنبؤ بالجولات",
-    page_icon="🔮",
+    page_title="المختبر الاستراتيجي للجولات",
+    page_icon="🧪",
     layout="wide"
 )
 
@@ -23,17 +24,14 @@ st.set_page_config(
 # ==============================================================================
 
 def _streak_series(binary_series: pd.Series) -> pd.Series:
-    """دالة مساعدة لحساب السلاسل المتتالية."""
     groups = (binary_series != binary_series.shift()).cumsum()
     streak = binary_series.groupby(groups).cumcount() + 1
     return streak * binary_series
 
-# هذا الديكور هو "العقل" الذي يمنع إعادة تدريب النموذج مع كل ضغطة زر
 @st.cache_resource
 def train_and_prepare():
     """
-    دالة شاملة تقوم بتجهيز البيانات وتدريب النموذج وإرجاع حزمة متكاملة.
-    تعمل هذه الدالة بصمت تام، وتقوم فقط بالعمليات الحاسوبية.
+    دالة شاملة تقوم بتجهيز البيانات، تدريب النموذج، وإجراء اختبار رجعي.
     """
     # --- البيانات الأولية الكاملة ---
     raw_data = [
@@ -68,12 +66,7 @@ def train_and_prepare():
     # --- 2. تدريب النموذج ---
     X = feats.drop('target', axis=1)
     y = feats['target'].values
-    
-    final_model = RandomForestClassifier(
-        n_estimators=800, max_features='sqrt',
-        min_samples_split=10, min_samples_leaf=4,
-        class_weight='balanced', random_state=42, n_jobs=-1
-    )
+    final_model = RandomForestClassifier(n_estimators=800, max_features='sqrt', min_samples_split=10, min_samples_leaf=4, class_weight='balanced', random_state=42, n_jobs=-1)
     final_model.fit(X, y)
     
     # --- 3. تحديد العتبة المثلى ---
@@ -83,113 +76,131 @@ def train_and_prepare():
         model_fold = RandomForestClassifier(**final_model.get_params())
         model_fold.fit(X.iloc[tr_idx], y[tr_idx])
         oof_proba[val_idx] = model_fold.predict_proba(X.iloc[val_idx])[:, 1]
-    
     mask = ~np.isnan(oof_proba)
     fpr, tpr, roc_thresholds = roc_curve(y[mask], oof_proba[mask])
     optimal_threshold = float(roc_thresholds[np.argmax(tpr - fpr)])
 
+    # --- 4. (جديد) إجراء الاختبار الرجعي ---
+    predictions = (final_model.predict_proba(X)[:, 1] >= optimal_threshold).astype(int)
+    feats['prediction'] = predictions
+    feats['actual'] = y
+    
+    # محاكاة استراتيجية بسيطة
+    # نربح 0.95 وحدة إذا كان التوقع صحيحًا (فوق 2x)، ونخسر وحدة واحدة إذا كان خاطئًا
+    feats['profit'] = np.where(
+        (feats['prediction'] == 1) & (feats['actual'] == 1), 
+        0.95, 
+        np.where(feats['prediction'] == 1, -1, 0)
+    )
+    feats['cumulative_profit'] = feats['profit'].cumsum()
+    
     bundle = {
         'model': final_model,
         'threshold': optimal_threshold,
-        'feature_columns': list(X.columns)
+        'feature_columns': list(X.columns),
+        'backtest_results': feats[['cumulative_profit', 'prediction', 'actual']]
     }
     return bundle
 
 def build_feature_row_from_values(last_values: list) -> dict:
-    """
-    يبني سطر سمات واحد من قائمة القيم الماضية.
-    """
+    # (هذه الدالة تبقى كما هي دون تغيير)
     last3 = last_values[-3:]
     last5 = last_values[-5:]
     last10 = last_values[-10:]
-    
-    # حساب السلاسل
     is_low_series = pd.Series([1 if v < 2.0 else 0 for v in last_values])
     low_streak = float(_streak_series(is_low_series).iloc[-1])
     is_high_series = pd.Series([1 if v >= 2.0 else 0 for v in last_values])
     high_streak = float(_streak_series(is_high_series).iloc[-1])
-
-    # حساب المتوسطات والانحرافات
     avg_last_5 = np.mean(last5)
     std_last_5 = np.std(last5, ddof=1)
     std_last_10 = np.std(last10, ddof=1)
-    
     return {
-        'previous_crash': float(last_values[-1]),
-        'avg_last_3': float(np.mean(last3)),
-        'std_last_3': float(np.std(last3, ddof=1)),
-        'avg_last_5': avg_last_5,
-        'std_last_5': std_last_5,
-        'avg_last_10': float(np.mean(last10)),
-        'std_last_10': std_last_10,
-        'min_last_5': float(np.min(last5)),
-        'max_last_5': float(np.max(last5)),
+        'previous_crash': float(last_values[-1]),'avg_last_3': float(np.mean(last3)), 'std_last_3': float(np.std(last3, ddof=1)),
+        'avg_last_5': avg_last_5, 'std_last_5': std_last_5, 'avg_last_10': float(np.mean(last10)),
+        'std_last_10': std_last_10, 'min_last_5': float(np.min(last5)), 'max_last_5': float(np.max(last5)),
         'ema_5': float(pd.Series(last_values).ewm(span=5, adjust=False).mean().iloc[-1]),
-        'low_streak': low_streak,
-        'high_streak': high_streak,
-        'low_ratio_last_10': float(np.mean(np.array(last10) < 2.0)),
-        'delta_prev_vs_avg5': float(last_values[-1] - avg_last_5),
-        'vol_ratio_5_10': float(std_last_5 / (std_last_10 + 1e-6))
+        'low_streak': low_streak, 'high_streak': high_streak, 'low_ratio_last_10': float(np.mean(np.array(last10) < 2.0)),
+        'delta_prev_vs_avg5': float(last_values[-1] - avg_last_5), 'vol_ratio_5_10': float(std_last_5 / (std_last_10 + 1e-6))
     }
 
 # ==============================================================================
 # الجزء الثاني: واجهة المستخدم التفاعلية
 # ==============================================================================
 
-st.title("🔮 أداة التنبؤ بالجولات")
-st.write("""
-هذه الأداة تستخدم نموذج تعلم آلي لتحليل الأنماط في سجل الجولات السابقة. 
-أدخل **10** قيم على الأقل للحصول على تنبؤ للجولة القادمة.
-""")
+st.title("🧪 المختبر الاستراتيجي للجولات")
 
-# --- تحميل النموذج المدرب ---
-# تم نقل الرسائل إلى خارج الدالة لتجنب الخطأ
-with st.spinner("⏳ جاري تدريب النموذج لأول مرة... قد يستغرق هذا بضع دقائق."):
+# --- تحميل النموذج والبيانات ---
+with st.spinner("⏳ جاري تدريب النموذج وإجراء الاختبار الرجعي لأول مرة..."):
     trained_bundle = train_and_prepare()
-st.success("✅ النموذج جاهز للاستخدام!", icon="🎉")
+st.success("✅ النموذج جاهز والتحليل اكتمل!", icon="🎉")
 
+tab1, tab2 = st.tabs(["🚀 أداة التنبؤ", "📈 نتائج الاختبار الرجعي"])
 
-# --- حقل إدخال البيانات ---
-user_input = st.text_area(
-    "أدخل الأرقام هنا (كل رقم في سطر جديد أو مفصولة بمسافة):",
-    height=200,
-    placeholder="1.23\n4.56\n1.89\n1.01\n3.34\n5.05\n1.16\n1.98\n2.45\n1.11"
-)
+with tab1:
+    st.header("أداة التنبؤ المباشر")
+    st.write("أدخل **10** قيم على الأقل للحصول على تنبؤ للجولة القادمة.")
+    user_input = st.text_area("أدخل الأرقام هنا:", height=200, placeholder="1.23\n4.56\n...")
 
-# --- زر التنبؤ ---
-if st.button("🚀 تنبأ الآن", type="primary"):
-    if user_input:
-        try:
-            # --- معالجة المدخلات ---
-            crashes = [float(x) for x in user_input.replace('\n', ' ').split()]
-            if len(crashes) < 10:
-                st.error(f"❌ خطأ: الرجاء إدخال 10 أرقام على الأقل. لقد أدخلت {len(crashes)} فقط.", icon="🚨")
-            else:
-                # --- بناء السمات للتنبؤ ---
-                model = trained_bundle['model']
-                thr = trained_bundle['threshold']
-                feat_cols = trained_bundle['feature_columns']
-                
-                feats_dict = build_feature_row_from_values(crashes)
-                features_df = pd.DataFrame([feats_dict])[feat_cols]
-
-                # --- التنبؤ وعرض النتيجة ---
-                proba_high = float(model.predict_proba(features_df)[0][1])
-                prediction = 1 if proba_high >= thr else 0
-                
-                if prediction == 1:
-                    st.success(f"النتيجة المتوقعة: **مرتفع (>= 2.0x)**", icon="🔼")
+    if st.button("🚀 تنبأ الآن", type="primary"):
+        if user_input:
+            try:
+                crashes = [float(x) for x in user_input.replace('\n', ' ').split()]
+                if len(crashes) < 10:
+                    st.error(f"❌ خطأ: أدخل 10 أرقام على الأقل.", icon="🚨")
                 else:
-                    st.warning(f"النتيجة المتوقعة: **منخفض (< 2.0x)**", icon="🔽")
+                    model = trained_bundle['model']
+                    thr = trained_bundle['threshold']
+                    feat_cols = trained_bundle['feature_columns']
+                    feats_dict = build_feature_row_from_values(crashes)
+                    features_df = pd.DataFrame([feats_dict])[feat_cols]
+                    proba_high = float(model.predict_proba(features_df)[0][1])
+                    prediction = 1 if proba_high >= thr else 0
+                    
+                    if prediction == 1:
+                        st.success(f"النتيجة المتوقعة: **مرتفع (>= 2.0x)**", icon="🔼")
+                    else:
+                        st.warning(f"النتيجة المتوقعة: **منخفض (< 2.0x)**", icon="🔽")
 
-                col1, col2 = st.columns(2)
-                col1.metric("احتمالية الارتفاع", f"{proba_high*100:.2f}%")
-                col2.metric("العتبة المستخدمة لاتخاذ القرار", f"{thr:.3f}")
-                
-        except (ValueError, IndexError):
-            st.error("❌ خطأ: الرجاء التأكد من إدخال أرقام صالحة فقط ومفصولة بشكل صحيح.", icon="🚨")
+                    col1, col2 = st.columns(2)
+                    col1.metric("احتمالية الارتفاع", f"{proba_high*100:.2f}%")
+                    col2.metric("العتبة المستخدمة", f"{thr:.3f}")
+            except (ValueError, IndexError):
+                st.error("❌ خطأ: تأكد من إدخال أرقام صالحة.", icon="🚨")
+
+with tab2:
+    st.header("📈 نتائج الاختبار الرجعي (Backtesting)")
+    st.write("""
+    هذا الرسم البياني يوضح النتيجة التراكمية لو أننا اتبعنا استراتيجية النموذج على **كامل البيانات التاريخية**.
+    - **الاستراتيجية**: نراهن بوحدة واحدة عندما يتنبأ النموذج بنتيجة "مرتفع".
+    - **الربح**: نكسب 0.95 وحدة إذا كان التنبؤ صحيحًا.
+    - **الخسارة**: نخسر وحدة واحدة إذا كان التنبؤ خاطئًا.
+    """)
+
+    backtest_df = trained_bundle['backtest_results']
+    
+    # عرض الرسم البياني
+    fig = px.line(backtest_df, y='cumulative_profit', title='الأداء التراكمي لاستراتيجية النموذج عبر الزمن', labels={'index': 'عدد الجولات', 'cumulative_profit': 'الربح/الخسارة التراكمي'})
+    fig.add_hline(y=0, line_dash="dash", line_color="red")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # عرض إحصائيات إضافية
+    st.subheader("إحصائيات الأداء")
+    total_bets = backtest_df['prediction'].sum()
+    correct_bets = len(backtest_df[(backtest_df['prediction'] == 1) & (backtest_df['actual'] == 1)])
+    accuracy_on_bets = (correct_bets / total_bets) * 100 if total_bets > 0 else 0
+    final_profit = backtest_df['cumulative_profit'].iloc[-1]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("إجمالي الرهانات (حسب النموذج)", f"{total_bets}")
+    col2.metric("دقة الرهانات الصحيحة", f"{accuracy_on_bets:.2f}%")
+    col3.metric("النتيجة النهائية", f"{final_profit:.2f} وحدة")
+    
+    if final_profit < 0:
+        st.error("**الاستنتاج**: كما هو موضح، اتباع استراتيجية النموذج على البيانات التاريخية كان سيؤدي إلى خسارة. هذا يعزز فكرة أن النتائج عشوائية ولا يمكن التنبؤ بها بشكل مربح.", icon="📉")
+    else:
+        st.success("**الاستنتاج**: أظهر الاختبار على هذه البيانات التاريخية ربحًا. هذا قد يكون بسبب صدف إحصائية في هذه العينة المحدودة من البيانات ولا يضمن أبدًا الربح المستقبلي.", icon="📈")
 
 st.markdown("---")
-st.info("ℹ️ **إخلاء مسؤولية**: هذه الأداة هي مشروع علمي تجريبي لأغراض تعليمية فقط. التنبؤات ليست مضمونة وقد تكون غير دقيقة. لا تستخدم هذه الأداة لاتخاذ قرارات مالية حقيقية.", icon="💡")
+st.info("ℹ️ **إخلاء مسؤولية**: هذه الأداة هي مشروع علمي تجريبي لأغراض تعليمية. التنبؤات والاختبارات الرجعية لا تضمن أداءً مستقبليًا.", icon="💡")
 
 
