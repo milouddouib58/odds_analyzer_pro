@@ -24,6 +24,7 @@ from sklearn.ensemble import (
     RandomForestClassifier, ExtraTreesClassifier,
     GradientBoostingClassifier, HistGradientBoostingClassifier
 )
+from sklearn.isotonic import IsotonicRegression
 
 # محاولات استيراد اختيارية لنماذج إضافية
 HAS_XGB = False
@@ -42,12 +43,12 @@ except Exception:
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="🧪 المختبر الاستراتيجي للجولات — Pro",
+    page_title="🧪 المختبر الاستراتيجي للجولات — Pro Calibrated Stacking",
     page_icon="🧪",
     layout="wide"
 )
 
-# ثوابت عامة افتراضية
+# ثوابت عامة
 RANDOM_STATE = 42
 EPS = 1e-6
 
@@ -69,9 +70,7 @@ def _streak_from_list(values, cond):
 
 def purged_time_series_splits(n_samples, n_splits=5, embargo=10):
     """
-    توليد طيات Walk-Forward مع Purge/Embargo:
-    - نستخدم TimeSeriesSplit كأساس.
-    - نحذف آخر 'embargo' نقطة من التدريب قبل بداية مجموعة الاختبار.
+    Walk-Forward مع Purge/Embargo لمنع التسرب الزمني بسبب النوافذ المتحركة.
     """
     base = TimeSeriesSplit(n_splits=n_splits)
     for tr_idx, te_idx in base.split(np.arange(n_samples)):
@@ -90,9 +89,9 @@ def profit_for_threshold(y_true, proba, thr, gain_tp=0.95, loss_fp=-1.0):
     fp = ((pred == 1) & (y_true == 0)).sum()
     return tp * gain_tp + fp * loss_fp
 
-def find_optimal_thresholds(y_true, proba, gain_tp=0.95, loss_fp=-1.0):
+def find_thresholds(y_true, proba, gain_tp=0.95, loss_fp=-1.0):
     """
-    يُعيد عتبات: youden, f1, profit + مقاييس OOF عامة.
+    يُعيد عتبات: youden, f1, profit + مقاييس عامة.
     """
     y_true = np.asarray(y_true).astype(int)
     proba = np.asarray(proba).astype(float)
@@ -110,7 +109,7 @@ def find_optimal_thresholds(y_true, proba, gain_tp=0.95, loss_fp=-1.0):
     else:
         thr_f1 = 0.5
 
-    # Profit (بحث شبكي خفيف + المرشحين الفريدين)
+    # Profit (بحث شبكي + عتبات ROC/PR)
     candidates = np.unique(np.concatenate([
         np.linspace(0.05, 0.95, 181),
         roc_thresholds,
@@ -120,7 +119,7 @@ def find_optimal_thresholds(y_true, proba, gain_tp=0.95, loss_fp=-1.0):
     thr_profit = float(candidates[int(np.argmax(profits))])
     best_profit = float(np.max(profits))
 
-    # مقاييس عند Youden للمقارنة
+    # مقاييس عند Youden (للمقارنة السريعة)
     y_pred_y = (proba >= thr_youden).astype(int)
     metrics = {
         'roc_auc': float(roc_auc_score(y_true, proba)),
@@ -130,16 +129,41 @@ def find_optimal_thresholds(y_true, proba, gain_tp=0.95, loss_fp=-1.0):
         'profit_youden': float(profit_for_threshold(y_true, proba, thr_youden, gain_tp, loss_fp)),
         'profit_opt': best_profit
     }
-
     return {'youden': thr_youden, 'f1': thr_f1, 'profit': thr_profit}, metrics
+
+def threshold_for_target_precision(y_true, proba, target_precision=0.70, min_pos_rate=0.02):
+    """
+    اختر العتبة التي تحقق Precision مستهدف مع معدل توقعات إيجابية أدنى.
+    يمنع انحراف النموذج للتصنيف الإيجابي دائمًا.
+    """
+    y_true = np.asarray(y_true).astype(int)
+    proba = np.asarray(proba).astype(float)
+
+    prec, rec, thr = precision_recall_curve(y_true, proba)
+    # استبعاد أول نقطة (لا عتبة)
+    if thr.size == 0:
+        return 0.5
+    prec = prec[1:]
+    rec = rec[1:]
+    thr = thr
+
+    # نسبة الإيجابيات المتوقعة لكل عتبة
+    pos_rate = [(proba >= t).mean() for t in thr]
+
+    # العتبات التي تحقق precision المطلوب وتضمن معدل إيجابيات أدنى
+    mask = (prec >= target_precision) & (np.array(pos_rate) >= min_pos_rate)
+    if np.any(mask):
+        # اختر أعلى recall من ضمنها أو أعلى profit
+        idx = int(np.argmax(rec[mask]))
+        candidates = np.where(mask)[0]
+        return float(thr[candidates[idx]])
+    else:
+        # fallback: عتبة مرتفعة افتراضيًا لتجنب كثير من الإيجابيات
+        return float(np.quantile(proba, 0.9))
 
 # ============================ هندسة السمات ============================
 
 def build_features_df(raw_data: list) -> pd.DataFrame:
-    """
-    يبني DataFrame ميزات متقدمة من السلسلة التاريخية.
-    الهدف: target = 1 إذا crash >= 2.0 وإلا 0.
-    """
     s = pd.Series(raw_data, name="crash")
     df = pd.DataFrame(s)
 
@@ -149,7 +173,7 @@ def build_features_df(raw_data: list) -> pd.DataFrame:
     df['low_streak'] = _streak_series(df['is_low'])
     df['high_streak'] = _streak_series(df['is_high'])
 
-    # ميزات تُبنى من القيم السابقة فقط
+    # ميزات من القيم السابقة فقط
     x = df['crash'].shift(1)
     feats = pd.DataFrame(index=df.index)
 
@@ -168,7 +192,7 @@ def build_features_df(raw_data: list) -> pd.DataFrame:
     feats['median_last_5'] = x.rolling(5, min_periods=5).median()
     feats['range_last_5'] = feats['max_last_5'] - feats['min_last_5']
 
-    # EMA (على القيم السابقة فقط)
+    # EMA
     feats['ema_3'] = x.ewm(span=3, adjust=False).mean()
     feats['ema_5'] = x.ewm(span=5, adjust=False).mean()
     feats['ema_10'] = x.ewm(span=10, adjust=False).mean()
@@ -178,7 +202,7 @@ def build_features_df(raw_data: list) -> pd.DataFrame:
     feats['high_streak'] = df['high_streak'].shift(1)
     feats['low_ratio_last_10'] = df['is_low'].shift(1).rolling(10, min_periods=10).mean()
 
-    # مشتقات ونِسب تذبذب
+    # مشتقات ونسب تذبذب
     feats['delta_prev_vs_avg5'] = feats['lag_1'] - feats['avg_last_5']
     feats['zscore_prev_5'] = feats['delta_prev_vs_avg5'] / (feats['std_last_5'] + EPS)
     feats['vol_ratio_3_5'] = feats['std_last_3'] / (feats['std_last_5'] + EPS)
@@ -192,25 +216,18 @@ def build_features_df(raw_data: list) -> pd.DataFrame:
     return feats
 
 def build_feature_row_from_values(last_values: list) -> dict:
-    """
-    يبني صف ميزات من تاريخ قيم (≥ 10).
-    """
     if len(last_values) < 10:
         raise ValueError("أدخل 10 قيماً على الأقل.")
 
     v = list(map(float, last_values))
     last3, last5, last10 = v[-3:], v[-5:], v[-10:]
 
-    lag_1 = float(v[-1])
-    lag_2 = float(v[-2])
-    lag_3 = float(v[-3])
+    lag_1 = float(v[-1]); lag_2 = float(v[-2]); lag_3 = float(v[-3])
 
     avg_last_3 = float(np.mean(last3))
     std_last_3 = float(np.std(last3, ddof=1))
-
     avg_last_5 = float(np.mean(last5))
     std_last_5 = float(np.std(last5, ddof=1))
-
     avg_last_10 = float(np.mean(last10))
     std_last_10 = float(np.std(last10, ddof=1))
 
@@ -252,47 +269,39 @@ def build_feature_row_from_values(last_values: list) -> dict:
 
 def get_base_models(use_xgb=True, use_lgbm=True):
     models = OrderedDict()
-
     models['RF'] = RandomForestClassifier(
         n_estimators=800, max_features='sqrt',
         min_samples_split=10, min_samples_leaf=4,
         class_weight='balanced', random_state=RANDOM_STATE, n_jobs=-1
     )
-
     models['ET'] = ExtraTreesClassifier(
         n_estimators=1000, max_features='sqrt',
         min_samples_split=5, min_samples_leaf=2,
         class_weight='balanced', random_state=RANDOM_STATE, n_jobs=-1
     )
-
     models['GB'] = GradientBoostingClassifier(
         learning_rate=0.05, n_estimators=400, max_depth=3, random_state=RANDOM_STATE
     )
-
     models['HGB'] = HistGradientBoostingClassifier(
         learning_rate=0.05, max_depth=None, max_iter=400, random_state=RANDOM_STATE
     )
-
     models['LR'] = Pipeline([
         ('scaler', StandardScaler()),
         ('clf', LogisticRegression(
             class_weight='balanced', max_iter=3000, solver='lbfgs', random_state=RANDOM_STATE
         ))
     ])
-
     models['SVC'] = Pipeline([
         ('scaler', StandardScaler()),
         ('clf', SVC(
             C=1.5, gamma='scale', probability=True, class_weight='balanced', random_state=RANDOM_STATE
         ))
     ])
-
     if use_xgb and HAS_XGB:
         models['XGB'] = XGBClassifier(
             n_estimators=600, learning_rate=0.05, max_depth=4,
             subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
-            random_state=RANDOM_STATE, n_jobs=-1, eval_metric='logloss',
-            tree_method='hist'
+            random_state=RANDOM_STATE, n_jobs=-1, eval_metric='logloss', tree_method='hist'
         )
     if use_lgbm and HAS_LGBM:
         models['LGBM'] = LGBMClassifier(
@@ -302,13 +311,9 @@ def get_base_models(use_xgb=True, use_lgbm=True):
     return models
 
 def generate_oof_and_fit(models_dict, X, y, n_splits=5, embargo=10):
-    """
-    - OOF أمينة باستخدام Purged Walk-Forward.
-    - تدريب نسخة كاملة من كل نموذج للاستخدام لاحقًا.
-    """
     splits = list(purged_time_series_splits(len(X), n_splits=n_splits, embargo=embargo))
     if len(splits) == 0:
-        raise ValueError("إعدادات الطيات/الـembargo جعلت الطيات فارغة. قلّل قيمة embargo أو عدد الطيات.")
+        raise ValueError("الطيات/الـembargo جعلت الطيات فارغة. قلّل قيمة embargo أو عدد الطيات.")
 
     oof_df = pd.DataFrame(index=X.index, columns=list(models_dict.keys()), dtype=float)
     fitted_models = {}
@@ -321,13 +326,33 @@ def generate_oof_and_fit(models_dict, X, y, n_splits=5, embargo=10):
             oof_vals[va_idx] = mdl.predict_proba(X.iloc[va_idx])[:, 1]
         oof_df[name] = oof_vals
 
-        # fit على كامل البيانات
         mdl_full = clone(model)
         mdl_full.fit(X, y)
         fitted_models[name] = mdl_full
 
     valid_mask = ~oof_df.isna().any(axis=1)
     return oof_df[valid_mask].reset_index(drop=True), fitted_models, valid_mask
+
+# ============================ المعايرة (سر منع "كلها مرتفع") ============================
+
+def fit_isotonic_safe(probs, y):
+    probs = np.asarray(probs).astype(float)
+    y = np.asarray(y).astype(int)
+    # إذا الاحتمالات ثابتة أو y صنف واحد -> استخدم هوية
+    if (np.unique(probs[~np.isnan(probs)]).size < 5) or (np.unique(y).size < 2):
+        return None  # هوية
+    try:
+        iso = IsotonicRegression(out_of_bounds='clip')
+        iso.fit(probs, y)
+        return iso
+    except Exception:
+        return None
+
+def apply_calibrator(probs, calibrator):
+    probs = np.asarray(probs).astype(float)
+    if calibrator is None:
+        return np.clip(probs, 0.0, 1.0)
+    return np.clip(calibrator.predict(probs), 0.0, 1.0)
 
 # ============================ تدريب شامل وتجميع ============================
 
@@ -338,40 +363,54 @@ def train_and_prepare(n_splits, embargo, gain_tp, loss_fp, use_xgb, use_lgbm):
         8.72, 6.75, 1.86, 2.18, 1.25, 2.28, 1.24, 1.2, 1.54, 24.46, 4.16, 1.49, 1.09, 1.47, 1.54, 1.53, 2.1, 32.04, 11, 1.17, 1.7, 2.61, 1.26, 22.23, 1.77, 1.93, 3.35, 7.01, 1.83, 9.39, 3.31, 2.04, 1.3, 6.65, 1.16, 3.39, 1.95, 10.85, 1.65, 1.22, 1.6, 4.67, 1.85, 2.72, 1, 3.02, 1.35, 1.3, 1.37, 17.54, 1.18, 1, 14.4, 1.11, 6.15, 2.39, 2.22, 1.42, 1.23, 2.42, 1.07, 1.24, 2.55, 7.26, 1.69, 5.1, 2.59, 5.51, 2.31, 2.12, 1.97, 1.5, 3.01, 2.29, 1.36, 4.95, 5.09, 8.5, 1.77, 5.52, 3.93, 1.5, 2.28, 2.49, 18.25, 1.68, 1.42, 2.12, 4.17, 1.04, 2.35, 1, 1.01, 5.46, 1.13, 2.84, 3.39, 2.79, 1.59, 1.53, 4.34, 2.96, 1.06, 1.72, 2.16, 2.2, 3.61, 2.34, 4.49, 1.72, 1.78, 9.27, 8.49, 2.86, 1.66, 4.63, 9.25, 1.35, 1, 1.64, 1.86, 2.81, 2.44, 1.74, 1.1, 1.29, 1.45, 8.92, 1.24, 6.39, 1.16, 1.19, 2.4, 4.64, 3.17, 24.21, 1.17, 1.42, 2.13, 1.12, 3.78, 1.12, 1.52, 22.81, 1.31, 1.9, 1.38, 1.47, 2.86, 1.79, 1.49, 1.38, 1.84, 1.06, 3.3, 5.97, 1, 2.92, 1.64, 5.32, 3.26, 1.78, 2.24, 3.16, 1.6, 1.08, 1.55, 1.07, 1.02, 1.23, 1.08, 5.22, 3.32, 24.86, 3.37, 5.16, 1.69, 2.31, 1.07, 1.1, 1.01, 1.36, 1.38, 1.54, 5.34, 2.68, 5.78, 3.63, 1.89, 8.41, 4.06, 1.44, 1.5, 3.17, 1.02, 1.8, 1.9, 1.86, 1.85, 1.73, 3.86, 3.11, 2.44, 1.15, 2.03, 1.05, 3.05, 1.88, 10.13, 2.29, 1.41, 1, 5.46, 1.26, 23.33, 1.96, 1.03, 4.54, 1.37, 3.5, 1.13, 1.16, 1.43, 1.13, 1.05, 33.27, 9.96, 1.79, 2.07, 18.51, 5.75, 1.15, 1.08, 5.92, 1.38, 1.61, 12.99, 24.72, 4.86, 1.11, 2.86, 1.54, 3.71, 4, 7.57, 2.03, 2.18, 5.52, 13.37, 3.73, 2.41, 1.79, 5.57, 4.36, 12.33, 1.61, 3.28, 2.89, 1.47, 1.08, 26.89, 1.53, 2.94, 5.29, 1.23, 1.57, 1.12, 5.69, 3.29, 2.72, 1.18, 5.03, 1.1, 1.32, 1.18, 1.07, 1.27, 4.6, 11.68, 1.74, 3.94, 3.63, 1.05, 1.61, 1.62, 2.41, 6.9, 2.02, 1.01, 3.22, 17.21, 1.95, 8.8, 1.44, 2.76, 3.1, 2.84, 1.35, 1.84, 1.6, 10.72, 1.17, 3.47, 1.45, 1.29, 1.46, 2.23, 12.3, 3.27, 1.23, 1.02, 1.66, 3.79, 2.06, 4.55, 7.95, 8.55, 4.08, 2.02, 1.21, 1.19, 1.53, 4.9, 1.84, 10.51, 1.01, 1.34, 1.5, 1.4, 1.42, 4.18, 7.99, 1.23, 1.67, 3.16, 1.64, 25.06, 4.52, 1.5, 3.23, 1.09, 1.45, 2.77, 7.42, 7.48, 1.89, 2.11, 4.1, 1.26, 2.29, 10.12, 1.35, 13.21, 2.36, 22.35, 1.76, 2.22, 1.04, 1.18, 3.69, 1.47, 10.2, 1.47, 1.68, 2.45, 1.03, 2.04, 1.47, 1.18, 1.72, 1, 3.25, 1.1, 8.74, 1.01, 1.54, 1.34, 5.22, 5.31, 4.47, 2.78, 21.37, 3.38, 1.63, 2.21, 2.35, 2.14, 1.46, 1.25, 1.67, 1.08, 3.94, 1.66, 31.1, 1.73, 2.18, 2.06, 1.08, 1.11, 1, 1.07, 1.31, 1.55, 1.98, 1.75, 1.23, 1.32, 2.56, 3.21, 1.81, 2.09, 1.34, 3.42, 1.29, 1.36, 1.76, 1.61, 4.52, 1.08, 1.97, 3.75, 1.8, 6.36, 1.14, 1.72, 2.39, 1.28, 4.22, 2.12, 1.28, 1.38, 1.42, 28.26, 2.15, 1.31, 1.65, 2.43, 2.76, 1.54, 1.61, 11.91, 2.93, 8.1, 2.04, 1.84, 1.26, 3.69, 3.97, 3.01, 3.16, 1.3, 7.9, 1.72, 5.57, 2.42, 1.74, 2.06, 2.86, 1.56, 1.4, 2.35, 2.82, 4.03, 1.28, 2.21, 1.1, 2.06, 1.14, 1.58, 27.78, 2.04, 1.52, 1.22, 1.4, 1.29, 1.16, 11.72, 1.33, 1.3, 4.34, 1.02, 1.63, 1.9, 9, 1.42, 3.13, 3.8, 1.02, 1.25, 2.45, 1.74, 1.06, 1.38, 3.46, 1.08, 1, 1.02, 1.84, 1, 1.77, 3.07, 5.26, 1.73, 1.07, 3.75, 2.32, 1.6, 1.22, 1.72, 2.01, 1.11, 2.03, 1.17, 1.98, 2.18, 34.49, 1.2, 10.3, 3.4, 2.58, 2.2, 3.16, 29.22, 4.26, 3.18, 3.29, 1.09, 2.3, 1.25, 3.05, 2.99, 2.16, 3.02, 2.21, 1.59, 5.74, 1.02, 1.12, 1.21, 2.25, 4.38, 1.05, 1.05, 1.9, 23.03, 4.93, 1.03, 16.7, 4.08, 1.68, 2.4, 2.89, 2.85, 2.75, 20.29, 3.57, 9.68, 1.46, 5.73, 4.84, 1.15, 1.92, 3.71, 3.41, 22.67, 15.65, 1.86, 3.41, 1.89, 1.01, 3.02, 13.81, 1.55, 1.16, 6.35, 5.6, 2.55, 16.8, 5.48, 1.49, 2.07, 1.05, 1.49, 6.29, 1.32, 23.22, 1.07, 1.65, 20.07, 1.14, 1.1, 18.38, 4.34, 3.8, 6.17, 2.27, 1.69, 1.07, 3.74, 1.6, 1.02, 1.45, 1.86, 5.13, 1.57, 6.93, 15.82, 1, 1.16, 4.14, 1.08, 2.35, 2.15, 13.52, 10.87, 9.85, 1.97, 1, 3.46, 1.31, 3.28, 2.74, 1.98, 2.22, 1, 9.95, 1.41, 1.43, 2.13, 4.6, 2.68, 4.13, 1.61, 1.46, 1.23, 9.57, 1.14, 1.17, 14.27, 4.01, 5.55, 1.95, 2.48, 1.78, 2.21, 1.65, 1.08, 2.63, 8.53, 2.2, 1.33, 21.72, 1.3, 1.43, 6.37, 1.09, 3.94, 1.88, 3.38, 1.66, 1.41, 22.99, 1.55, 7.5, 25.48, 2.21, 3.62, 1.68, 9.92, 3.4, 2.66, 1.03, 4.63, 1.89, 1.77, 1.9, 1.01, 1.81, 32.39, 2.1, 1.23, 6.26, 9.06, 1.17, 2.41, 2.52, 1.63, 5.61, 1, 2.63, 1.88, 1.5, 23.8, 5.65, 1.05, 1.07, 2.05, 1.7, 2.4, 18.27, 3.68, 13.17, 4.99, 20.81, 1.51, 6.33, 9.85, 10.15, 17.05, 27.6, 4.65, 3.18, 2.54, 3.92, 4.74, 1.81, 1.91, 4.42, 1.57, 2.17, 1.25, 1.03, 1.15, 1.19, 13.97, 2.39, 1.34, 2.52, 1.47, 2.91, 2.31, 1.29, 1.61, 4.13, 1.83, 2.96, 1.08, 1.28, 13.53, 1.15, 1.51, 1.31, 3.45, 9.32, 5.42, 3.27, 2.56, 2.07, 1.83, 14.1, 15.36, 1.93, 1.47, 16.96, 1.61, 2.38, 2.66, 1.28, 1.46, 3.09, 6.73, 1.12, 1.85, 3.21, 1.15, 3.71, 1.64, 4.88, 11.09, 3.82, 2.49, 21.23, 2.01, 2.47, 2.47, 2.19, 2.14, 1, 2.09, 1.03, 5.22, 1.65, 1.13, 14.43, 1.68, 1.86, 1.21, 1.14, 1.47, 1.26, 3.44, 23.9, 2.53, 2.72, 1, 1.13, 3.34, 1.43, 1, 2.48, 2.01, 2.22, 6.43, 1.81, 2.12, 1.3, 4.02, 1.79, 3.9, 1.3, 5.04, 1.77, 6.67, 2.21, 1.58, 5.38, 2.79, 6.12, 2.95, 1.14, 1.19, 1.19, 10.23, 17.96, 10.1, 2.4, 9.29, 1.28, 4.07, 1.64, 2.1, 2.67, 1.08, 16.82, 2.83, 24.42, 1.01, 3.24, 5.05, 3.24, 1.56, 2.32, 1.23, 1.72, 3.39, 1.96, 1.18, 3.21, 23.95, 9.46, 23.12, 1.45, 3.22, 5, 2.04, 2.73, 6.28, 1.21, 14.3, 1.48, 3.3, 3.73, 4.09, 2.88, 8.83, 1.15, 4.58, 4.23, 2.34, 2, 11.38, 1.81, 1.03, 1.76, 2.41, 2.5, 5.82, 2.18, 10.19, 2.08, 18.19, 4.22, 7.78, 1.96, 1.43, 1.08, 2.38, 1.37, 1.21, 4.48, 1.64, 1.62, 21.24, 1.22, 7.99, 1.13, 1.29, 2.36, 3.94, 1.08, 1.41, 1.97, 1.41, 1.95, 1.28, 4.56, 3.35, 1.37, 1.18, 1.03, 3.67, 1.43, 1.8, 2.48, 11.95, 1.5, 3.52, 2.03, 1, 1.1, 10.13, 1.44, 14.19, 2.1, 8.46, 1.06, 1.66, 1.2, 7.22, 1.75, 1.78, 3.76, 2.21, 1, 25.19, 5.96, 5.42, 2.67, 1.37, 1.39, 15.95, 2.8, 1.76, 1.7, 2.81, 8.87, 1.48, 1.03, 1.14, 1.05, 10.29, 1.71, 23.98, 2.34, 1.97, 1.33, 24.02, 2.01, 13.74, 2.5, 1.33, 1.02, 1.76, 1.37, 8.97, 1.27, 1.38, 4.47, 1.38, 3.02, 17, 13.35, 1.07, 1.38, 5.74, 6.68, 24.72, 1.47, 1.25, 4.51, 4.47, 1.99, 1.15, 4.03, 1.17, 3.42, 6.46, 1.31, 1.46, 6.67, 3.79, 1.56, 3.98, 1.62, 2.13, 1.07, 4.88, 1.62, 1.5, 6.11, 1.31, 1.85, 1.93, 1.09, 1.49, 1.41, 1.24, 1.05, 6.99, 1.33, 1.73, 10.76, 21.77, 1.18, 1.06, 5.36, 1.45, 1.16, 6.43, 2.1, 4.15, 1.14, 2.21, 33.48, 2.88, 1, 4.7, 1.27, 5.75, 4.97, 1.11, 3.51, 21.47, 1.21, 1.98, 1.11, 1.46, 1.77, 1.22, 2.65, 1.66, 5.29, 1.58, 2.03, 5.86, 1.1, 1.68, 1.35, 1.72, 1.15, 2.69, 2.81, 3.46, 1.58, 1.07, 7.18, 2.35, 6.05, 1.24, 5.69, 5.46, 1, 3.04, 4.76, 1.56, 1.41, 2.43, 7.97, 1.22, 1.94, 1.51, 21.71, 3.03, 1.43, 5.07, 1.87, 1.12, 1, 1.32, 1, 1.08, 1.1, 1.04, 1, 1.09, 1.97, 2.97, 1.21, 1.61, 5.94, 2.55, 4.48, 1.14, 2.73, 1.34, 1.33, 1.29, 1.25, 5.44, 1.77, 2.18, 2.52, 1.28, 22.25, 1.04, 3.57, 6.53, 1.34, 5.75, 1.61, 3.89, 1.07, 2.13, 5.05, 1.53, 3.53, 8.31, 2.15, 1.39, 1.23, 1.68, 17.14, 1.23, 2.38, 1, 2.02, 19.48, 1.22, 1.42, 6.26, 16.11, 2.05, 3.51, 3.53, 1.83, 6.86, 1.24, 27.78, 2.33, 3.43, 2.92, 1.26, 15.11, 24.58, 1.12, 2.46, 5.61, 9.79, 2.33, 1.34, 7.86, 1.1, 2.61, 2.34, 4.5, 1.79, 1.75, 18, 8.66, 1.92, 11.5, 1.35, 2.53, 1.79, 1.14, 1.58, 1.84, 1.35, 6.44, 4.49, 3.02, 3.16, 1.12, 1.42, 9.14, 1.26, 1.19, 2.47, 1.2, 3.88, 1.03, 1.85, 1.07, 1.03, 1.13, 4.87, 1.03, 1.8, 1.29, 6.11, 1.73, 30.16, 2.99, 2.34, 1.56, 4.33, 1.23, 7.39, 1.57, 3.16, 2.73, 1.46, 1.01, 8.24, 1.61, 2.28, 1.91, 1.49, 5.12, 3.53, 20.05, 3.26, 2.25, 6.61, 1.35, 4.32, 1, 2.13, 1.83, 1.26, 2.27, 1.21, 1.64, 1.77, 1.06, 1.05, 1.98, 3.1, 3.74, 22.09, 2.17, 2.97, 1.26, 1.83, 4.44, 1.08, 2.22, 1.24, 1.7, 20.14, 16.56, 1.72, 1.37, 1.06, 1.65, 2.42, 3.84, 1, 1.56, 1.93, 1.03, 1.47, 1.76, 12.64, 1.12, 1.32, 1.89, 1.64, 1.2, 3.15, 1.88, 1.12, 1.01, 1.45, 1.71, 1.65, 1.65, 5.16, 1.48, 1.73
     ]
 
-    # 2) تجهيز الميزات
     feats = build_features_df(raw_data)
     X = feats.drop('target', axis=1)
     y = feats['target'].values
 
-    # 3) النماذج الأساسية + OOF + تدريب كامل (Purged Walk-Forward)
     base_models = get_base_models(use_xgb=use_xgb, use_lgbm=use_lgbm)
     oof_df, fitted_models, valid_mask = generate_oof_and_fit(
         base_models, X, y, n_splits=n_splits, embargo=embargo
     )
     y_oof = y[valid_mask.values] if hasattr(valid_mask, 'values') else y[valid_mask]
 
-    # 4) المتعلم الفوقي (Stacking) على احتمالات OOF
+    # معايرة احتمالات النماذج الأساسية على OOF
+    base_calibrators = {}
+    oof_df_cal = pd.DataFrame(index=oof_df.index)
+    for name in oof_df.columns:
+        cal = fit_isotonic_safe(oof_df[name].values, y_oof)
+        base_calibrators[name] = cal
+        oof_df_cal[name] = apply_calibrator(oof_df[name].values, cal)
+
+    # المتعلم الفوقي على الاحتمالات المُعايرة
     meta = LogisticRegression(class_weight='balanced', solver='lbfgs', max_iter=6000, random_state=RANDOM_STATE)
-    meta.fit(oof_df.values, y_oof)
-    oof_ensemble_proba = meta.predict_proba(oof_df.values)[:, 1]
+    meta.fit(oof_df_cal.values, y_oof)
+    oof_ens = meta.predict_proba(oof_df_cal.values)[:, 1]
 
-    # 5) اختيار العتبات المثلى (Youden/F1/Profit)
-    thresholds, oof_metrics = find_optimal_thresholds(y_oof, oof_ensemble_proba, gain_tp=gain_tp, loss_fp=loss_fp)
+    # معايرة للتجميع أيضا
+    ens_calibrator = fit_isotonic_safe(oof_ens, y_oof)
+    oof_ens_cal = apply_calibrator(oof_ens, ens_calibrator)
 
-    # 6) إطار OOF للاختبار الرجعي الأمين
+    # عتبات متعددة (Youden/F1/Profit)
+    thresholds, oof_metrics = find_thresholds(y_oof, oof_ens_cal, gain_tp=gain_tp, loss_fp=loss_fp)
+
+    # إطار OOF للاختبار الرجعي الأمين
     backtest_df = feats.loc[valid_mask[valid_mask].index].copy()
     backtest_df.reset_index(drop=True, inplace=True)
-    backtest_df['oof_proba_ensemble'] = oof_ensemble_proba
+    backtest_df['oof_proba_ensemble_cal'] = oof_ens_cal
     backtest_df['actual'] = y_oof
 
     bundle = {
         'feature_columns': list(X.columns),
         'base_model_names': list(base_models.keys()),
         'fitted_models': fitted_models,
+        'base_calibrators': base_calibrators,
         'meta_learner': meta,
+        'ens_calibrator': ens_calibrator,
         'thresholds': thresholds,
         'oof_metrics': oof_metrics,
         'backtest_df': backtest_df,
+        'oof_y': y_oof,
+        'oof_proba': oof_ens_cal,  # المُعايرة النهائية
         'settings': {
             'n_splits': n_splits,
             'embargo': embargo,
@@ -385,101 +424,132 @@ def train_and_prepare(n_splits, embargo, gain_tp, loss_fp, use_xgb, use_lgbm):
 
 # ============================ واجهة المستخدم ============================
 
-st.title("🧪 المختبر الاستراتيجي للجولات — Pro")
-st.caption("تقسيم زمني احترافي (Purged Walk-Forward + Embargo) + تجميع نماذج Stacking + عتبة مُحسّنة للربحية")
+st.title("🧪 المختبر الاستراتيجي للجولات — Pro (معاير ومُجمّع)")
+st.caption("Purged Walk-Forward + Embargo + معايرة احتمالات + Stacking + عتبة ربح/Precision لمنع انحراف التوقعات")
 
-# إعدادات احترافية
 with st.sidebar:
-    st.header("⚙️ إعدادات احترافية")
+    st.header("⚙️ إعدادات التدريب")
     n_splits = st.slider("عدد الطيات (Walk-Forward)", 3, 8, 5, 1)
-    embargo = st.slider("Embargo (فاصل زمني لمنع التسرب)", 5, 40, 15, 1)
+    embargo = st.slider("Embargo (فاصل منع التسرب)", 5, 40, 15, 1)
     gain_tp = st.number_input("ربح الرهان الصحيح (TP)", value=0.95, step=0.05, format="%.2f")
     loss_fp = st.number_input("خسارة الرهان الخاطئ (FP)", value=-1.00, step=0.05, format="%.2f")
-    use_xgb = st.checkbox("تفعيل XGBoost (إن كان متاحًا)", value=True)
-    use_lgbm = st.checkbox("تفعيل LightGBM (إن كان متاحًا)", value=True)
-    st.info("ملاحظة: كل تغيير يُعيد التدريب (مخبأ باستخدام cache_resource).", icon="ℹ️")
+    use_xgb = st.checkbox("تفعيل XGBoost (إن متاح)", value=True)
+    use_lgbm = st.checkbox("تفعيل LightGBM (إن متاح)", value=True)
+    st.info("أي تعديل سيُعيد التدريب (مخبأ عبر cache_resource).", icon="ℹ️")
 
-with st.spinner("⏳ جاري تجهيز الميزات وتدريب النماذج وتجميعها..."):
+with st.spinner("⏳ تدريب وتجميع ومعايرة النماذج..."):
     trained = train_and_prepare(n_splits, embargo, gain_tp, loss_fp, use_xgb, use_lgbm)
-st.success("✅ تم تجهيز النماذج والتجميع والاختبار الرجعي!", icon="🎉")
+st.success("✅ تم الإعداد!", icon="🎉")
 
-tab_predict, tab_backtest, tab_models = st.tabs(["🚀 أداة التنبؤ", "📈 الاختبار الرجعي", "🧠 تفاصيل النماذج"])
+tab_predict, tab_backtest, tab_models = st.tabs(["🚀 التنبؤ", "📈 الاختبار الرجعي", "🧠 تفاصيل"])
 
-# ------------------------- تبويب التنبؤ -------------------------
+# ------------------------- التنبؤ -------------------------
 with tab_predict:
-    st.header("التنبؤ التفاعلي")
-    colp1, colp2, colp3 = st.columns(3)
-    thr_choice = colp1.selectbox("طريقة اختيار العتبة", ["profit", "youden", "f1"], index=0)
-    conf_margin = colp2.slider("مرشح الثقة (يزيد دقة الرهانات ويقلل عددها)", 0.0, 0.5, 0.15, 0.01)
-    min_vals = colp3.number_input("عدد القيم الدنيا المطلوبة", min_value=10, max_value=50, value=10, step=1)
+    st.header("التنبؤ التفاعلي (معاير ومُجمّع)")
+    colp1, colp2, colp3, colp4 = st.columns(4)
+    thr_mode = colp1.selectbox("طريقة العتبة", ["precision", "profit", "youden", "f1"], index=0,
+                               help="Precision يمنع خروج كل الإشارات كـ'مرتفع'")
+    target_prec = colp2.slider("Precision مستهدف", 0.50, 0.90, 0.70, 0.01)
+    blend_w = colp3.slider("وزن التجميع مقابل التصويت (0=تصويت، 1=تجميع)", 0.0, 1.0, 0.6, 0.05)
+    conf_margin = colp4.slider("مرشح الثقة (يزيد دقة الرهانات ويقلل عددها)", 0.0, 0.5, 0.15, 0.01)
 
-    st.write("أدخل على الأقل القيم الأخيرة (سطر لكل قيمة أو مفصولة بمسافة):")
+    st.write("أدخل آخر القيم (سطر لكل قيمة أو مفصولة بمسافة، لا يقل عن 10):")
     user_input = st.text_area("القيم:", height=180, placeholder="1.23\n4.56\n...")
 
     if st.button("🚀 تنبأ الآن", type="primary"):
         try:
             vals = [float(x) for x in user_input.replace('\n', ' ').split()]
-            if len(vals) < min_vals:
-                st.error(f"أدخل {min_vals} قيماً على الأقل.", icon="🚨")
+            if len(vals) < 10:
+                st.error("أدخل 10 قيماً على الأقل.", icon="🚨")
             else:
-                # بناء صف ميزات
                 feats_dict = build_feature_row_from_values(vals)
                 X_row = pd.DataFrame([feats_dict])[trained['feature_columns']]
 
-                # احتمالات النماذج الأساسية
+                # احتمالات النماذج الأساسية + معايرتها
                 base_probs = {}
+                base_probs_cal = {}
                 for name in trained['base_model_names']:
                     mdl = trained['fitted_models'][name]
-                    base_probs[name] = float(mdl.predict_proba(X_row)[0][1])
+                    p = float(mdl.predict_proba(X_row)[0][1])
+                    base_probs[name] = p
+                    base_probs_cal[name] = float(apply_calibrator([p], trained['base_calibrators'][name])[0])
 
-                # احتمال التجميع
-                base_vec = np.array([base_probs[name] for name in trained['base_model_names']]).reshape(1, -1)
-                proba_ens = float(trained['meta_learner'].predict_proba(base_vec)[0][1])
+                # التجميع على الاحتمالات المُعايرة
+                base_vec_cal = np.array([base_probs_cal[n] for n in trained['base_model_names']]).reshape(1, -1)
+                p_ens = float(trained['meta_learner'].predict_proba(base_vec_cal)[0][1])
+                p_ens_cal = float(apply_calibrator([p_ens], trained['ens_calibrator'])[0])
 
-                thr = trained['thresholds'][thr_choice]
-                pred = int(proba_ens >= thr)
-                place_bet = (proba_ens >= thr + conf_margin)
+                # تصويت ناعم (Median بعد المعايرة) لثبات أعلى
+                sv_prob = float(np.median(list(base_probs_cal.values())))
 
-                # عرض النتيجة
+                # مزج: يمنع انحراف التجميع لفئة واحدة
+                p_final = blend_w * p_ens_cal + (1.0 - blend_w) * sv_prob
+
+                # اختيار العتبة
+                if thr_mode == "precision":
+                    thr = threshold_for_target_precision(trained['oof_y'], trained['oof_proba'],
+                                                         target_precision=target_prec, min_pos_rate=0.02)
+                else:
+                    thr = trained['thresholds'][thr_mode]
+
+                pred = int(p_final >= thr)
+                place_bet = (p_final >= thr + conf_margin)
+
+                # عرض
                 if pred == 1:
                     st.success("التوقع: مرتفع (>= 2.0x) 🔼", icon="🔼")
                 else:
                     st.warning("التوقع: منخفض (< 2.0x) 🔽", icon="🔽")
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("احتمال الارتفاع (التجميع)", f"{proba_ens*100:.2f}%")
-                c2.metric("العتبة المختارة", f"{thr:.3f}")
-                c3.metric("قرار الرهان (مرشح الثقة)", "نعم ✅" if place_bet and pred==1 else "لا/انتظار ⏳")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("احتمال (تجميع مُعاير)", f"{p_ens_cal*100:.2f}%")
+                c2.metric("احتمال (تصويت مُعاير)", f"{sv_prob*100:.2f}%")
+                c3.metric("احتمال نهائي (Blend)", f"{p_final*100:.2f}%")
+                c4.metric("العتبة المستخدمة", f"{thr:.3f}")
 
-                # مخطط احتمالات النماذج الأساسية
+                # إجماع/تباين النماذج
+                probs_list = list(base_probs_cal.values())
+                std_base = float(np.std(probs_list))
+                st.info(f"قياس التباين بين النماذج الأساسية (كلما قلّ كان أفضل): {std_base:.3f}")
+
+                # قرار الرهان
+                st.write("قرار الرهان:", "نعم ✅" if (place_bet and pred==1) else "لا/انتظار ⏳")
+
+                # مخطط الاحتمالات لكل نموذج
                 base_plot_df = pd.DataFrame({
-                    'model': list(base_probs.keys()),
-                    'proba_high': list(base_probs.values())
-                }).sort_values('proba_high', ascending=False)
-
-                fig = px.bar(base_plot_df, x='model', y='proba_high',
-                             title="احتمالات الارتفاع حسب النماذج الأساسية",
+                    'model': list(base_probs_cal.keys()),
+                    'proba_high_calibrated': list(base_probs_cal.values())
+                }).sort_values('proba_high_calibrated', ascending=False)
+                fig = px.bar(base_plot_df, x='model', y='proba_high_calibrated',
+                             title="احتمالات الارتفاع (بعد المعايرة) لكل نموذج",
                              range_y=[0,1])
                 st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
             st.error(f"❌ خطأ في الإدخال أو التنبؤ: {e}", icon="🚨")
 
-# ------------------------- تبويب الاختبار الرجعي -------------------------
+# ------------------------- الاختبار الرجعي -------------------------
 with tab_backtest:
-    st.header("الاختبار الرجعي (OOF أمين مع Purged Walk-Forward)")
-    st.write("نستخدم تنبؤ OOF للتجميع لتقييم الأداء دون تفاؤل.")
+    st.header("OOF Backtest أمين (بعد المعايرة)")
+    st.write("اختر طريقة العتبة ومرشح الثقة و/أو Precision مستهدف لرؤية تأثيرها على الربح والدقة.")
 
-    thr_choice_bt = st.selectbox("اختر العتبة", ["profit", "youden", "f1"], index=0, key="thr_bt")
-    conf_margin_bt = st.slider("مرشح الثقة للرهانات", 0.0, 0.5, 0.15, 0.01, key="margin_bt")
+    colb1, colb2, colb3 = st.columns(3)
+    thr_mode_bt = colb1.selectbox("طريقة العتبة", ["precision", "profit", "youden", "f1"], index=0, key="thr_bt")
+    target_prec_bt = colb2.slider("Precision مستهدف (لخيار precision)", 0.50, 0.90, 0.70, 0.01, key="tprec_bt")
+    conf_margin_bt = colb3.slider("مرشح الثقة", 0.0, 0.5, 0.15, 0.01, key="margin_bt")
 
     df_bt = trained['backtest_df'].copy()
-    thr_bt = trained['thresholds'][thr_choice_bt]
+    y_oof = trained['oof_y']
+    oof_p = trained['oof_proba']  # مُعايرة
 
-    df_bt['pred_all'] = (df_bt['oof_proba_ensemble'] >= thr_bt).astype(int)
-    df_bt['pred_filtered'] = (df_bt['oof_proba_ensemble'] >= (thr_bt + conf_margin_bt)).astype(int)
+    if thr_mode_bt == "precision":
+        thr_bt = threshold_for_target_precision(y_oof, oof_p, target_precision=target_prec_bt, min_pos_rate=0.02)
+    else:
+        thr_bt = trained['thresholds'][thr_mode_bt]
 
-    # أرباح استراتيجية بسيطة بناءً على gain/loss في الإعدادات
+    df_bt['pred_all'] = (oof_p >= thr_bt).astype(int)
+    df_bt['pred_filtered'] = (oof_p >= (thr_bt + conf_margin_bt)).astype(int)
+
     G = trained['settings']['gain_tp']
     L = trained['settings']['loss_fp']
 
@@ -495,7 +565,6 @@ with tab_backtest:
     df_bt['cum_profit_all'] = df_bt['profit_all'].cumsum()
     df_bt['cum_profit_filtered'] = df_bt['profit_filtered'].cumsum()
 
-    # دقة الرهانات فقط
     bets_all = int(df_bt['pred_all'].sum())
     correct_all = int(((df_bt['pred_all'] == 1) & (df_bt['actual'] == 1)).sum())
     acc_bets_all = (correct_all / bets_all)*100 if bets_all > 0 else 0.0
@@ -504,7 +573,6 @@ with tab_backtest:
     correct_f = int(((df_bt['pred_filtered'] == 1) & (df_bt['actual'] == 1)).sum())
     acc_bets_f = (correct_f / bets_f)*100 if bets_f > 0 else 0.0
 
-    # رسم الربح التراكمي
     plot_df = df_bt[['cum_profit_all', 'cum_profit_filtered']].copy()
     plot_df.columns = ['الربح التراكمي (كل الرهانات)', 'الربح التراكمي (مع مرشح الثقة)']
     fig2 = px.line(plot_df, title="الأداء التراكمي للاستراتيجية عبر الزمن")
@@ -518,23 +586,19 @@ with tab_backtest:
     cba4.metric("دقة الرهانات (بمرشح)", f"{acc_bets_f:.2f}%")
     cba5.metric("الربح النهائي (بمرشح)", f"{df_bt['cum_profit_filtered'].iloc[-1]:.2f}")
 
-    st.subheader("مقاييس OOF العامة")
+    st.subheader("مقاييس OOF العامة (بعد المعايرة)")
     st.write(f"- ROC-AUC: {trained['oof_metrics']['roc_auc']:.3f}")
-    st.write(f"- Profit (عند العتبة المثلى للربح): {trained['oof_metrics']['profit_opt']:.2f}")
+    st.write(f"- Profit (عند عتبة الربح المثلى): {trained['oof_metrics']['profit_opt']:.2f}")
     st.write(f"- Accuracy عند Youden: {trained['oof_metrics']['acc_youden']*100:.2f}% | "
              f"Balanced Acc: {trained['oof_metrics']['bal_acc_youden']*100:.2f}% | "
              f"F1: {trained['oof_metrics']['f1_youden']:.3f}")
 
-# ------------------------- تبويب تفاصيل النماذج -------------------------
+# ------------------------- تفاصيل -------------------------
 with tab_models:
-    st.header("تفاصيل النماذج والميزات")
-    st.write("التجميع يعتمد على عدة نماذج أساسية + متعلم فوقي Logistic Regression على احتمالاتها.")
-
-    st.subheader("قائمة النماذج الأساسية")
-    st.write(", ".join(trained['base_model_names']))
-
-    st.subheader("الإعدادات المستخدمة")
+    st.header("تفاصيل وإعدادات")
     st.json(trained['settings'])
+    st.info("تمت معايرة احتمالات كل نموذج أساسي ثم التجميع، وهذا يقلّل ظاهرة خروج كل الإشارات كـ'مرتفع'. "
+            "استخدم وضع العتبة Precision مع هدف 0.7–0.8 لتقليل الإيجابيات الكاذبة بقوة.", icon="ℹ️")
 
 st.markdown("---")
-st.info("تنبيه مهم: حتى مع تقسيم احترافي وتجميع نماذج وعتبة ربح، قد تكون السلسلة عشوائية فعلًا. مرشح الثقة يقلل عدد الرهانات لكنه يرفع دقتها. اختبر دائمًا على OOF ولا تفترض الاستمرارية.", icon="ℹ️")
+st.info("ملاحظة: حتى مع التعقيد المرتفع، قد تكون السلسلة عشوائية حقًا. استخدم مرشح الثقة والعتبة القائمة على Precision لتفادي الإشارات المتحيزة.", icon="ℹ️")
