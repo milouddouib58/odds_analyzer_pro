@@ -1,6 +1,10 @@
+streamlit
 pandas
 numpy
 scikit-learn
-streamlit
-plotly.express
+plotly
+xgboost
+lightgbm
+
+
 
